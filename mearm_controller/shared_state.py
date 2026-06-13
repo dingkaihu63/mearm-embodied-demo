@@ -30,6 +30,12 @@ class Detection:
     area: float
     x_mm: float = 0.0
     y_mm: float = 0.0
+    # ── YOLO 扩展字段 ──────────────────────────────────────────────
+    class_name: str = ""          # 英文类名 (e.g. "cup")
+    class_cn: str = ""            # 中文类名 (e.g. "杯子")
+    confidence: float = 1.0       # 检测置信度 (HSV 默认 1.0)
+    source: str = "hsv"           # "yolo" | "hsv" | "merged"
+    bbox: tuple = ()              # YOLO 边界框 (x1, y1, x2, y2), HSV 为空
 
 
 class SharedState:
@@ -118,7 +124,13 @@ class SharedState:
                 "joints": dict(self.joint_angles),
                 "detections": [{"color": d.color, "cx": d.cx, "cy": d.cy,
                                 "area": int(d.area), "x_mm": round(d.x_mm, 1),
-                                "y_mm": round(d.y_mm, 1)} for d in self.detections],
+                                "y_mm": round(d.y_mm, 1),
+                                "class_name": d.class_name,
+                                "class_cn": d.class_cn,
+                                "confidence": round(d.confidence, 2),
+                                "source": d.source,
+                                "bbox": list(d.bbox) if d.bbox else []}
+                               for d in self.detections],
                 "serial_connected": self.serial_connected,
                 "camera_connected": self.camera_connected,
                 "camera_source": self.camera_source,

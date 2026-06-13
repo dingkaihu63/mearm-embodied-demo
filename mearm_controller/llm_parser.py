@@ -13,7 +13,7 @@ from typing import Optional
 
 from .config import (
     LLM_SYSTEM_PROMPT, OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_VISION_MODEL,
-    LLM_TIMEOUT, LLM_MAX_TOKENS, COLOR_CN, log,
+    LLM_TIMEOUT, LLM_MAX_TOKENS, COLOR_CN, YOLO_CN_CLASS, log,
 )
 from .shared_state import state
 from .speaker import Speaker
@@ -213,6 +213,7 @@ class LLMIntentParser:
         result = {
             "action": action,
             "color": raw.get("color") or raw.get("target"),
+            "class_name": raw.get("class_name"),  # YOLO 物体类名
             "gesture": raw.get("gesture"),
             "message": raw.get("message", ""),
             "confidence": float(raw.get("confidence", 0.5)),
@@ -395,6 +396,7 @@ class LLMIntentParser:
                 if any(v in t for v in LLMIntentParser.PICK_VERBS):
                     col_name = COLOR_CN.get(en_color, en_color)
                     return {"action": "pick_and_place", "color": en_color,
+                            "class_name": None,
                             "gesture": None,
                             "message": f"好的，正在抓取{col_name}物体。",
                             "confidence": 0.85}
@@ -403,11 +405,23 @@ class LLMIntentParser:
                     # 给中等置信度, 可能用户想说抓取但没说完整
                     pass
 
+        # ── A2. 物体名 + 抓取动词 ──────────────────────────────────────────
+        for cn_name, en_name in YOLO_CN_CLASS.items():
+            if cn_name in t:
+                if any(v in t for v in LLMIntentParser.PICK_VERBS):
+                    return {"action": "pick_and_place", "color": None,
+                            "class_name": en_name,
+                            "gesture": None,
+                            "message": f"好的，正在抓取{cn_name}。",
+                            "confidence": 0.85}
+                break  # 一个文本最多匹配一个物体名
+
         # ── B. 遍历结构化规则表 ────────────────────────────────────────
         for keywords, intent in LLMIntentParser.KEYWORD_RULES:
             if any(k in t for k in keywords):
                 result = dict(intent)  # 拷贝
                 result.setdefault("color", None)
+                result.setdefault("class_name", None)
                 result.setdefault("gesture", None)
                 # 如果是 pick_and_place 且没指定颜色, 用 visible 中第一个
                 if result.get("action") == "pick_and_place" and not result.get("color"):
@@ -417,11 +431,13 @@ class LLMIntentParser:
 
         # ── C. 模糊回零匹配 (单独处理, "回"字太短容易误触发) ──────────
         if any(k in t for k in ["回零", "回原位", "回去", "归位"]):
-            return {"action": "home", "color": None, "gesture": None,
+            return {"action": "home", "color": None, "class_name": None,
+                    "gesture": None,
                     "message": "收到，正在回到初始位置。", "confidence": 1.0}
 
         # ── D. 未知指令 → 低置信度, 交给 Ollama LLM ───────────────────
-        return {"action": "say", "color": None, "gesture": None,
+        return {"action": "say", "color": None, "class_name": None,
+                "gesture": None,
                 "message": "抱歉，我没有理解您的指令。", "confidence": 0.0}
 
 

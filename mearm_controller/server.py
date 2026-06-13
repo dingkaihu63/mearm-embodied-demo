@@ -109,7 +109,7 @@ def broadcast_loop(socketio: SocketIO):
 def main():
     parser = argparse.ArgumentParser(description="MeArm 工作台服务器")
     parser.add_argument("--port", default=None, help="Arduino 串口 (如 COM3)")
-    parser.add_argument("--cam", type=int, default=0, help="摄像头索引 (默认 0)")
+    parser.add_argument("--cam", default=0, help="摄像头索引 (默认 0, 可用 'auto' 自动搜索)")
     parser.add_argument("--ip-cam", default=None, help="手机 IP 摄像头 URL (如 http://192.168.1.5:8080/video)")
     parser.add_argument("--host", default="0.0.0.0", help="绑定地址 (默认 0.0.0.0)")
     parser.add_argument("--web-port", type=int, default=5000, help="Web 端口 (默认 5000)")
@@ -155,6 +155,16 @@ def main():
     listener = VoiceListener(voice_q)
     speaker = Speaker()
     llm = LLMIntentParser() if not args.no_llm else None
+
+    # ── API 视觉回退 (YOLO 不可用时) ─────────────────────────────────────
+    if llm and llm.is_available and not vision._yolo:
+        try:
+            from .vision_api import APIDetector
+            api_detector = APIDetector(llm)
+            if api_detector.is_available:
+                vision.set_api_detector(api_detector)
+        except Exception as e:
+            state.add_log(f"⚠️ API 视觉回退初始化失败: {e}")
 
     # 手势识别器
     gesture_recog = GestureRecognizer()

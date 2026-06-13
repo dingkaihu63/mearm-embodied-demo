@@ -9,7 +9,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
 import threading
 import time
 from typing import Optional
@@ -24,7 +23,8 @@ from .config import (
     JOINT_LIMITS, HOME_ANGLES, GESTURES, COLOR_CN, JOINT_CN, GESTURE_CN,
     HAND_GESTURE_CN, FRAME_WIDTH, FRAME_HEIGHT, JPEG_QUALITY,
     SAFE_MODE, SAFE_GESTURE_DELAY, SAFE_PICK_DELAY,
-    GESTURE_PAUSE_AFTER_ACTION, log,
+    GESTURE_PAUSE_AFTER_ACTION,
+    YOLO_CLASS_CN, log,
 )
 from .shared_state import state
 from .arm_serial import ArmSerial
@@ -49,7 +49,7 @@ except ImportError:
 
 def create_app() -> Flask:
     app = Flask(__name__, template_folder="../templates")
-    app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", os.urandom(24).hex())
+    app.config["SECRET_KEY"] = "mearm-workbench-secret"
     return app
 
 
@@ -61,6 +61,7 @@ def _pick_and_place(arm: ArmSerial, x_mm: float, y_mm: float,
                    z_mm: float = 0.0,
                    llm: Optional[LLMIntentParser] = None,
                    color: str = "",
+                   class_name: str = "",
                    visible_colors: Optional[list[str]] = None):
     """LLM 增强的 pick-and-place 序列.
 
@@ -148,11 +149,58 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
         prompt_adapter: LLM 提示词适配器 (可选)
     """
 
+    # ── 物体查找辅助函数 ───────────────────────────────────────────────────────
+    def _find_target(color: str = "", class_name: str = ""):
+        """从当前检测结果中查找匹配的物体.
+
+        优先级: class_name + color > class_name > color > 第一个检测
+        返回 (Detection, label_cn) 或 (None, "")
+        """
+        dets = state.detections
+        if not dets:
+            return None, ""
+
+        # 1. 精确匹配: class_name AND color
+        if class_name and color:
+            for d in dets:
+                if d.class_name == class_name and d.color == color:
+                    return d, f"{d.class_cn or class_name}({COLOR_CN.get(color, color)})"
+
+        # 2. 仅 class_name
+        if class_name:
+            for d in dets:
+                if d.class_name == class_name:
+                    label = d.class_cn or class_name
+                    if d.color:
+                        label += f"({COLOR_CN.get(d.color, d.color)})"
+                    return d, label
+
+        # 3. 仅 color
+        if color:
+            for d in dets:
+                if d.color == color:
+                    label = COLOR_CN.get(color, color)
+                    if d.class_cn:
+                        label = f"{d.class_cn}({label})"
+                    return d, label
+
+        # 4. 返回置信度最高的检测
+        best = max(dets, key=lambda d: d.confidence)
+        label = best.class_cn or best.color or "物体"
+        return best, label
+
+    # ── 获取可见物体信息 (供 LLM 意图解析) ───────────────────────────────────
+    def _get_visible_info() -> tuple[list[str], list[str]]:
+        """返回 (visible_colors, visible_objects)."""
+        colors = list({d.color for d in state.detections if d.color})
+        objects = list({d.class_name for d in state.detections if d.class_name})
+        return colors, objects
+
     # ── 文本/语音指令处理管道 ─────────────────────────────────────────────────
     def process_command(text: str):
         """完整指令管道: 文本 → LLM/关键词 → 意图 → 执行 → 语音回复"""
         state.last_voice_text = text
-        visible_colors = [d.color for d in state.detections]
+        visible_colors, visible_objects = _get_visible_info()
 
         # 解析意图
         if llm:
@@ -175,30 +223,41 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
         action = intent.get("action", "say")
 
         if action == "pick_and_place":
-            color = intent.get("color")
-            target = next((d for d in state.detections if d.color == color), None)
-            ccn = COLOR_CN.get(color, color)
+            color = intent.get("color") or ""
+            class_name = intent.get("class_name") or ""
+            target, label_cn = _find_target(color=color, class_name=class_name)
+
             if target is None:
-                msg = f"抱歉，我现在看不到 {color} 物体。"
+                # 生成有意义的错误信息
+                if class_name and color:
+                    desc = f"{COLOR_CN.get(color, color)}{YOLO_CLASS_CN.get(class_name, class_name)}"
+                elif class_name:
+                    desc = YOLO_CLASS_CN.get(class_name, class_name)
+                elif color:
+                    desc = COLOR_CN.get(color, color)
+                else:
+                    desc = "指定"
+                msg = f"抱歉，我现在看不到{desc}物体。"
                 llm_speak(speaker, llm,
-                          f"摄像头中没有检测到{ccn}物体，无法抓取",
+                          f"摄像头中没有检测到{desc}物体，无法抓取",
                           msg)
                 state.add_log(f"❌ {msg}")
                 emit("error", {"msg": msg})
             else:
                 state.arm_busy = True
-                state.add_log(f"🎯 语音抓取: {color} @ ({target.x_mm:.0f},{target.y_mm:.0f})mm")
+                state.add_log(f"🎯 语音抓取: {label_cn} @ ({target.x_mm:.0f},{target.y_mm:.0f})mm")
                 emit("state_update", state.get_state_dict())
 
                 def _pick():
                     _pick_and_place(arm, target.x_mm, target.y_mm,
-                                    llm=llm, color=color,
+                                    llm=llm, color=target.color or color,
+                                    class_name=target.class_name or class_name,
                                     visible_colors=visible_colors)
                     state.arm_busy = False
                     state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
                     llm_speak(speaker, llm,
-                              f"{ccn}物体抓取放置完成",
-                              f"{ccn}物体抓取完成")
+                              f"{label_cn}物体抓取放置完成",
+                              f"{label_cn}抓取完成")
                     socketio.emit("state_update", state.get_state_dict())
 
                 threading.Thread(target=_pick, daemon=True).start()
@@ -427,31 +486,34 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
     @socketio.on("pick_color")
     def on_pick_color(data: dict):
         color = data.get("color", "")
-        target = next((d for d in state.detections if d.color == color), None)
-        ccn = COLOR_CN.get(color, color)
+        class_name = data.get("class_name", "")
+        target, label_cn = _find_target(color=color, class_name=class_name)
+
         if target is None:
-            state.add_log(f"❌ 未找到 {color} 物体")
+            desc = label_cn or color or class_name or "物体"
+            state.add_log(f"❌ 未找到 {desc}")
             llm_speak(speaker, llm,
-                      f"摄像头中没有检测到{ccn}物体，无法抓取",
-                      f"抱歉，我现在看不到{ccn}物体")
-            emit("error", {"msg": f"未找到 {color} 物体"})
+                      f"摄像头中没有检测到{desc}，无法抓取",
+                      f"抱歉，我现在看不到{desc}")
+            emit("error", {"msg": f"未找到 {desc}"})
             return
 
         state.arm_busy = True
-        state.add_log(f"🎯 抓取 {color} 物体 @ ({target.x_mm:.0f}, {target.y_mm:.0f})mm")
+        state.add_log(f"🎯 抓取 {label_cn} @ ({target.x_mm:.0f}, {target.y_mm:.0f})mm")
         llm_speak(speaker, llm,
-                  f"开始抓取位于坐标{target.x_mm:.0f},{target.y_mm:.0f}毫米的{ccn}物体",
-                  f"正在抓取{ccn}物体")
+                  f"开始抓取{label_cn}",
+                  f"正在抓取{label_cn}")
 
         def _pick():
             _pick_and_place(arm, target.x_mm, target.y_mm,
-                            llm=llm, color=color,
+                            llm=llm, color=target.color or color,
+                            class_name=target.class_name or class_name,
                             visible_colors=[d.color for d in state.detections])
             state.arm_busy = False
             state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
             llm_speak(speaker, llm,
-                      f"{ccn}物体抓取放置完成",
-                      f"{ccn}物体抓取完成")
+                      f"{label_cn}抓取放置完成",
+                      f"{label_cn}抓取完成")
             socketio.emit("state_update", state.get_state_dict())
 
         threading.Thread(target=_pick, daemon=True).start()

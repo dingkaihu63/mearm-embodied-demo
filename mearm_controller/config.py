@@ -169,20 +169,50 @@ EDGE_VOICE = "zh-CN-XiaoxiaoNeural"   # 女声, 温暖自然 ← 默认
 EDGE_TTS_RATE = "+10%"                # 语速稍快
 EDGE_TTS_PITCH = "+0Hz"               # 音高不变
 
+# ─── YOLO 物体检测 ─────────────────────────────────────────────────────────────
+YOLO_MODEL = "yolov8s.pt"         # ultralytics 自动下载, 也可用 yolov8n.pt (更快)
+YOLO_CONFIDENCE_THRESHOLD = 0.5    # 最低置信度
+YOLO_DEVICE = "cuda:0"            # 有 GPU 用 cuda:0, 否则 "cpu"
+YOLO_ENABLED = True               # 总开关 (无 GPU 会自动回退 API)
+# YOLO 检测帧间隔: 每 N 帧跑一次, 其余帧复用上次结果 (1=每帧都跑)
+YOLO_FRAME_INTERVAL = 3
+# API 视觉回退 (YOLO 不可用时, 用 Ollama vision model 做检测)
+API_VISION_ENABLED = True
+API_VISION_FRAME_INTERVAL = 15     # API 调用间隔 (帧), 避免频繁调用
+# COCO 80类中常用物体的中文名
+YOLO_CLASS_CN: dict[str, str] = {
+    "cup": "杯子", "bottle": "瓶子", "wine glass": "酒杯",
+    "bowl": "碗", "spoon": "勺子", "fork": "叉子", "knife": "刀",
+    "apple": "苹果", "orange": "橙子", "banana": "香蕉",
+    "carrot": "胡萝卜", "broccoli": "西兰花", "pizza": "披萨",
+    "cake": "蛋糕", "donut": "甜甜圈", "sandwich": "三明治", "hot dog": "热狗",
+    "book": "书", "scissors": "剪刀", "cell phone": "手机",
+    "mouse": "鼠标", "keyboard": "键盘", "remote": "遥控器",
+    "clock": "钟表", "vase": "花瓶", "teddy bear": "泰迪熊",
+    "toothbrush": "牙刷", "hair drier": "吹风机",
+    "laptop": "笔记本电脑", "tv": "电视", "tvmonitor": "显示器",
+    "tennis racket": "网球拍", "baseball bat": "棒球棒",
+    "baseball glove": "棒球手套", "sports ball": "球",
+    "backpack": "背包", "umbrella": "雨伞", "handbag": "手提包",
+    "suitcase": "行李箱", "tie": "领带",
+}
+YOLO_CN_CLASS: dict[str, str] = {v: k for k, v in YOLO_CLASS_CN.items()}
+
 # ─── LLM ──────────────────────────────────────────────────────────────────────
 LLM_SYSTEM_PROMPT = """\
 你是 MeArm V1.0 机械臂的 AI 大脑. \
 机械臂有 4 个关节: 底座(旋转)、肩(上下)、肘(伸缩)、爪(抓取). \
-你会收到用户的命令/手势和当前可见的彩色物体列表.
+你会收到用户的命令/手势和当前可见的物体列表 (含颜色 + YOLO 类名).
 
 【严格要求】只输出一行合法的 JSON 对象, 不要有任何前言、解释、markdown 标记或后缀.
 
 JSON 格式:
-{"action": "<pick_and_place|gesture|home|say>", "color": null, "gesture": null, "message": "中文回复", "confidence": 0.95}
+{"action": "<pick_and_place|gesture|home|say>", "color": null, "class_name": null, "gesture": null, "message": "中文回复", "confidence": 0.95}
 
 约束:
 - action: pick_and_place | gesture | home | say
 - color: 仅限 visible_objects 中列出的英文颜色名, 否则 null
+- class_name: 若用户说了物体名(杯子/苹果/瓶子/书等), 填英文类名, 否则 null
 - gesture: wave | point | nod | greet, 否则 null
 - message: 简短口语化中文 (≤20字)
 - confidence: 0.0–1.0
@@ -190,6 +220,7 @@ JSON 格式:
 - 谢谢/感谢 → action="say", message="不客气~"
 - 再见/拜拜 → action="gesture", gesture="wave", message="再见~"
 - 抓取 + 颜色 → action="pick_and_place", color=颜色名
+- 抓取 + 物体名 → action="pick_and_place", class_name=物体英文名
 - 回零/回家/reset → action="home"
 - 无法理解 → action="say", message="抱歉，我不太明白"
 - 【绝对不要输出 json 以外的任何文字】"""
