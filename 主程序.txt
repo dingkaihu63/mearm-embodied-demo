@@ -1,0 +1,182 @@
+#include <Arduino.h>
+#include <Servo.h>
+
+// ─── 引脚定义 ──────────────────────────────────
+const uint8_t PIN_BASE  = 11;   // #1 Centre Servo — 底座旋转
+const uint8_t PIN_LEFT  = 10;   // #2 Left Servo   — 左侧俯仰
+const uint8_t PIN_RIGHT =  9;   // #3 Right Servo  — 右侧俯仰
+const uint8_t PIN_CLAW  =  6;   // #4 Claw Servo   — 夹爪开合
+
+// ─── 机械限位 (度) ─────────────────────────────
+const uint8_t MIN_ANGLE = 30;
+const uint8_t MAX_ANGLE = 150;
+const uint8_t MIN_CLAW  = 0;
+const uint8_t MAX_CLAW  = 90;
+
+// 步进速度控制 (unchanged)
+const uint16_t STEP_INTERVAL_MS = 15;
+
+// ─── 全局对象与变量 ────────────────────────────
+Servo servoBase, servoLeft, servoRight, servoClaw;
+
+// 起始位置: 底座逆时针90°侧, 左右臂向上90°, 夹爪全开
+int targetBase  = 30,  targetLeft  = 150, targetRight  = 150, targetClaw = 90;
+int currentBase = 30,  currentLeft = 150, currentRight = 150, currentClaw = 90;
+
+#define BUF_SIZE 128
+char    serialBuf[BUF_SIZE];
+uint8_t bufIdx = 0;
+
+unsigned long lastStepTime = 0;
+
+// ── Motion-complete tracking ────────────────────
+// True while at least one servo is still stepping toward its target.
+// Set true when a MOVE command is parsed; cleared when all joints settle.
+bool motionInProgress = false;
+
+// ─── 辅助函数：安全限幅 (unchanged signature) ──
+int clampAngle(int val, int minVal, int maxVal) {
+  if (val < minVal) return minVal;
+  if (val > maxVal) return maxVal;
+  return val;
+}
+
+// ─── 辅助函数：单个舵机步进 (unchanged signature) ─
+bool stepServo(Servo &servo, int &current, int target) {
+  if (current < target) { current++; servo.write(current); return true; }
+  if (current > target) { current--; servo.write(current); return true; }
+  return false;
+}
+
+// ─── 辅助函数：立即移动 (用于初始化) ───────────
+void moveServosImmediate(int b, int l, int r, int c) {
+  currentBase = targetBase = b;
+  currentLeft = targetLeft = l;
+  currentRight = targetRight = r;
+  currentClaw = targetClaw = c;
+
+  servoBase.write(b);
+  servoLeft.write(l);
+  servoRight.write(r);
+  servoClaw.write(c);
+}
+
+//
+void parseCommand(char *cmd) {
+  // Trim trailing whitespace / CR
+  int len = (int)strlen(cmd);
+  while (len > 0 && (cmd[len - 1] == '\r' || cmd[len - 1] == ' ')) {
+    cmd[--len] = '\0';
+  }
+
+  // FIX-2: Trim leading spaces with memmove (safe for overlapping regions)
+  int start = 0;
+  while (cmd[start] == ' ') start++;
+  if (start > 0) {
+    memmove(cmd, cmd + start, (size_t)(len - start + 1)); // +1 for '\0'
+    len -= start;
+  }
+
+  if (len == 0) return;
+
+  // Built-in commands
+  if (strcasecmp(cmd, "home") == 0) {
+    targetBase = 30; targetLeft = 150; targetRight = 150; targetClaw = 90;
+    motionInProgress = true;
+    Serial.println(F("ACK:HOME"));
+    return;
+  }
+  if (strcasecmp(cmd, "status") == 0) {
+    Serial.print(F("STATUS:base:"));  Serial.print(currentBase);
+    Serial.print(F(",left:"));        Serial.print(currentLeft);
+    Serial.print(F(",right:"));       Serial.print(currentRight);
+    Serial.print(F(",claw:"));        Serial.println(currentClaw);
+    return;
+  }
+
+  // Parse "joint:angle[,joint:angle,...]"
+  bool hasValidMove = false;
+
+  // FIX-1: strtok_r → strtok (avr-libc; single-threaded, no re-entrance risk)
+  char *token = strtok(cmd, ",");
+  while (token != NULL) {
+    char *colon = strchr(token, ':');
+    if (colon == NULL) {
+      Serial.print(F("ERR:SYNTAX:")); Serial.println(token);
+      return;
+    }
+
+    *colon = '\0';
+    char *joint = token;
+    int   angle = atoi(colon + 1);
+
+    if      (strcasecmp(joint, "base")  == 0) { targetBase  = clampAngle(angle, MIN_ANGLE, MAX_ANGLE); hasValidMove = true; }
+    else if (strcasecmp(joint, "left")  == 0) { targetLeft  = clampAngle(angle, MIN_ANGLE, MAX_ANGLE); hasValidMove = true; }
+    else if (strcasecmp(joint, "right") == 0) { targetRight = clampAngle(angle, MIN_ANGLE, MAX_ANGLE); hasValidMove = true; }
+    else if (strcasecmp(joint, "claw")  == 0) { targetClaw  = clampAngle(angle, MIN_CLAW,  MAX_CLAW);  hasValidMove = true; }
+    else {
+      Serial.print(F("ERR:UNKNOWN_JOINT:")); Serial.println(joint);
+      return;
+    }
+
+    token = strtok(NULL, ",");
+  }
+
+  if (hasValidMove) {
+    motionInProgress = true;
+    // FIX-4: Acknowledge command receipt immediately; ACK:DONE follows
+    //        from loop() once all servos reach their targets.
+    Serial.println(F("ACK:MOVE"));
+  }
+}
+
+// ─── Setup ─────────────────────────────────────
+void setup() {
+  Serial.begin(115200);
+
+  servoBase.attach(PIN_BASE);
+  servoLeft.attach(PIN_LEFT);
+  servoRight.attach(PIN_RIGHT);
+  servoClaw.attach(PIN_CLAW);
+
+  moveServosImmediate(30, 150, 150, 90);
+  Serial.println(F("READY"));
+}
+
+// ─── Loop ──────────────────────────────────────
+void loop() {
+  // 1. Non-blocking serial receive (unchanged logic)
+  //    FIX-3: On overflow, reset bufIdx and report — receiver never stalls.
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\n') {
+      serialBuf[bufIdx] = '\0';
+      parseCommand(serialBuf);
+      bufIdx = 0;
+    } else if (bufIdx < (uint8_t)(BUF_SIZE - 1)) {
+      serialBuf[bufIdx++] = c;
+    } else {
+      // FIX-3: Buffer full without a newline — discard and signal error
+      Serial.println(F("ERR:BUF_OVERFLOW"));
+      bufIdx = 0;
+    }
+  }
+
+  // 2. Non-blocking smooth stepping (millis-based, unchanged cadence)
+  unsigned long now = millis();
+  if (now - lastStepTime >= STEP_INTERVAL_MS) {
+    lastStepTime = now;
+
+    // FIX-6: Explicit bool flag instead of bitwise |= on bool values
+    bool moving = stepServo(servoBase,  currentBase,  targetBase);
+    moving      = stepServo(servoLeft,  currentLeft,  targetLeft)  || moving;
+    moving      = stepServo(servoRight, currentRight, targetRight) || moving;
+    moving      = stepServo(servoClaw,  currentClaw,  targetClaw)  || moving;
+
+    // FIX-4: Emit ACK:DONE exactly once when all joints reach their targets
+    if (motionInProgress && !moving) {
+      motionInProgress = false;
+      Serial.println(F("ACK:DONE"));
+    }
+  }
+}

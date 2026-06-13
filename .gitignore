@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 环境变量
+.env
+
+# 模型文件 — 需自行下载
+models/vosk-model-small-cn/
+models/vosk-model-small-en-us-0.15/
+models/hand_landmarker.task
+vosk-model-*.zip
+
+# 用户数据
+memory/interactions.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# macOS 垃圾
+__MACOSX/
+
+# Claude Code
+.claude/
+
+# 旧文件
+Untitled-1.py

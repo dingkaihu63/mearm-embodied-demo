@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🤖 MeArm 工作台</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   MeArm 工作台 — 深色主题仪表盘
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --text-dim: #8b949e;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d2991d;
+  --orange: #db6d28;
+  --purple: #a371f7;
+  --radius: 8px;
+  --font: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  --mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  overflow-x: hidden;
+}
+
+/* ── 顶部导航栏 ─────────────────────────────────────────────────────────── */
+.topbar {
+  display: flex; align-items: center; gap: 16px;
+  padding: 8px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 100;
+}
+.topbar h1 { font-size: 18px; font-weight: 600; }
+.topbar .status-dots { display: flex; gap: 10px; margin-left: auto; }
+.status-dot {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 12px; color: var(--text-dim);
+}
+.status-dot .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  display: inline-block;
+}
+.dot-on  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot-off { background: var(--red); }
+.dot-busy { background: var(--yellow); animation: pulse 0.8s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+.topbar .fps { font-size: 11px; color: var(--text-dim); margin-left: 4px; }
+
+/* ── 主布局 ─────────────────────────────────────────────────────────────── */
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: auto auto auto;
+  gap: 10px;
+  padding: 10px;
+  height: calc(100vh - 53px);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+
+.panel-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600; font-size: 13px;
+}
+.panel-header .icon { font-size: 16px; }
+.panel-body {
+  flex: 1; overflow-y: auto;
+  padding: 8px;
+}
+
+/* ── 摄像头面板 ─────────────────────────────────────────────────────────── */
+.camera-panel { grid-column: 1 / 3; grid-row: 1 / 3; }
+.camera-tabs { display: flex; gap: 0; }
+.camera-tab {
+  padding: 6px 16px; font-size: 12px;
+  background: transparent; color: var(--text-dim);
+  border: 1px solid transparent; cursor: pointer;
+  border-radius: var(--radius) var(--radius) 0 0;
+  transition: all 0.15s;
+}
+.camera-tab.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+.camera-tab:hover:not(.active) { color: var(--text); border-color: var(--border); }
+.camera-view {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  background: #000; min-height: 300px; position: relative;
+}
+.camera-view img {
+  width: 100%; height: 100%; object-fit: contain;
+}
+
+/* ── 检测面板 ───────────────────────────────────────────────────────────── */
+.detection-panel { grid-column: 3; grid-row: 1 / 3; }
+.detection-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.detection-table th, .detection-table td {
+  padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border);
+}
+.detection-table th { color: var(--text-dim); font-weight: 500; font-size: 11px; }
+.color-badge {
+  display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+  margin-right: 6px; vertical-align: middle;
+}
+.no-data { color: var(--text-dim); text-align: center; padding: 20px; font-size: 13px; }
+
+/* ── 关节控制面板 ───────────────────────────────────────────────────────── */
+.joint-panel { grid-column: 1 / 2; grid-row: 3; }
+.joint-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.joint-label {
+  width: 60px; font-size: 12px; font-weight: 500;
+}
+.joint-slider {
+  flex: 1;
+  -webkit-appearance: none; height: 6px;
+  background: var(--border); border-radius: 3px; outline: none;
+}
+.joint-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 18px; height: 18px;
+  border-radius: 50%; background: var(--accent); cursor: pointer;
+  box-shadow: 0 0 6px rgba(88,166,255,0.6);
+}
+.joint-value {
+  width: 36px; text-align: right; font-family: var(--mono);
+  font-size: 13px; color: var(--accent);
+}
+.joint-bar-wrap {
+  width: 50px; height: 12px; background: var(--bg);
+  border-radius: 3px; overflow: hidden;
+}
+.joint-bar-fill {
+  height: 100%; border-radius: 3px; transition: width 0.2s;
+}
+.joint-bar-fill.base      { background: var(--accent); }
+.joint-bar-fill.left  { background: var(--green); }
+.joint-bar-fill.right     { background: var(--orange); }
+.joint-bar-fill.claw      { background: var(--purple); }
+
+/* ── 控制按钮面板 ────────────────────────────────────────────────────────── */
+.control-panel { grid-column: 2 / 3; grid-row: 3; }
+.ctrl-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+}
+.ctrl-btn {
+  padding: 8px 12px; font-size: 12px; font-family: var(--font);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel); color: var(--text);
+  cursor: pointer; transition: all 0.15s;
+}
+.ctrl-btn:hover { background: rgba(255,255,255,0.08); border-color: var(--accent); }
+.ctrl-btn.accent { border-color: var(--accent); color: var(--accent); }
+.ctrl-btn.accent:hover { background: rgba(88,166,255,0.1); }
+.ctrl-btn.warn { border-color: var(--orange); color: var(--orange); }
+.ctrl-btn.warn:hover { background: rgba(219,109,40,0.1); }
+.ctrl-btn.danger { border-color: var(--red); color: var(--red); font-weight: bold; }
+.ctrl-btn.danger:hover { background: rgba(248,81,73,0.15); }
+.ctrl-btn.success { border-color: var(--green); color: var(--green); }
+.ctrl-btn.success:hover { background: rgba(63,185,80,0.1); }
+.ctrl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── 串口监视器面板 ──────────────────────────────────────────────────────── */
+.serial-panel { grid-column: 3; grid-row: 3; }
+.serial-log {
+  font-family: var(--mono); font-size: 11px; line-height: 1.6;
+  max-height: 120px; overflow-y: auto; white-space: pre-wrap;
+  word-break: break-all;
+}
+.serial-log .tx { color: var(--accent); }
+.serial-log .rx { color: var(--green); }
+.serial-log .err { color: var(--red); }
+
+/* ── 日志面板 ────────────────────────────────────────────────────────────── */
+.log-panel {
+  position: fixed; bottom: 0; left: 0; right: 0; height: 26px;
+  background: var(--panel); border-top: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 12px;
+  font-family: var(--mono); font-size: 11px; z-index: 50;
+  transition: height 0.2s; overflow: hidden;
+  cursor: pointer;
+}
+.log-panel.expanded {
+  height: 180px; overflow-y: auto; display: block; padding: 8px 12px;
+  cursor: default;
+}
+.log-entry {
+  padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.02);
+  font-size: 11px; line-height: 1.5;
+}
+.log-toggle { color: var(--text-dim); cursor: pointer; }
+.log-toggle:hover { color: var(--text); }
+
+/* ── HSV 调节器弹窗 ─────────────────────────────────────────────────────── */
+.modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.7); z-index: 200;
+  align-items: center; justify-content: center;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px;
+  min-width: 400px; max-width: 90vw;
+}
+.modal h3 { margin-bottom: 12px; }
+.hsv-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.hsv-row label { width: 40px; font-size: 12px; }
+.hsv-row input[type="range"] { flex: 1; }
+.hsv-row .val { width: 30px; text-align: right; font-family: var(--mono); font-size: 12px; }
+.modal select { padding: 4px 8px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px; }
+
+/* ── 滚动条 ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     顶部导航栏
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<div class="topbar">
+  <h1>🤖 MeArm 工作台</h1>
+  <span style="font-size:11px;color:var(--text-dim)">v1.0</span>
+
+  <div class="status-dots">
+    <span class="status-dot" id="serial-status">
+      <span class="dot" id="serial-dot"></span> 串口
+    </span>
+    <span class="status-dot" id="camera-status">
+      <span class="dot" id="camera-dot"></span> 摄像头
+    </span>
+    <span class="status-dot" id="arm-status">
+      <span class="dot" id="arm-dot"></span> 机械臂
+    </span>
+    <span class="fps" id="fps-display">-- FPS</span>
+    <span style="font-size:11px;color:var(--text-dim);margin-left:8px" id="cam-source"></span>
+  </div>
+  <!-- 语音指令输入 -->
+  <div style="display:flex;align-items:center;gap:6px;flex:1;max-width:480px">
+    <button id="btn-voice" class="ctrl-btn" style="font-size:11px;padding:3px 8px;white-space:nowrap"
+            onclick="toggleVoice()" title="开启/关闭麦克风监听">🎤 语音</button>
+    <input type="text" id="cmd-input" placeholder="输入指令，回车发送…"
+           style="flex:1;padding:4px 8px;background:var(--bg);color:var(--text);
+                  border:1px solid var(--border);border-radius:4px;font-size:12px;
+                  font-family:var(--font)"
+           onkeydown="if(event.key==='Enter')sendCommand()">
+    <button class="ctrl-btn accent" style="font-size:11px;padding:3px 10px"
+            onclick="sendCommand()">发送</button>
+  </div>
+</div>
+
+<!-- 语音回复 Toast -->
+<div id="voice-toast" style="display:none;position:fixed;top:54px;left:50%;transform:translateX(-50%);
+     background:var(--accent);color:#fff;padding:8px 20px;border-radius:20px;
+     font-size:14px;z-index:300;max-width:600px;text-align:center;
+     box-shadow:0 4px 16px rgba(0,0,0,0.4);transition:opacity 0.3s"></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     主工作区
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<div class="main-grid">
+
+  <!-- ── 摄像头面板 ──────────────────────────────────────────────────────── -->
+  <div class="panel camera-panel">
+    <div class="panel-header">
+      <span class="icon">📷</span> 实时画面
+      <div class="camera-tabs" style="margin-left:12px">
+        <button class="camera-tab active" data-view="annotated">检测标注</button>
+        <button class="camera-tab" data-view="raw">原始画面</button>
+        <button class="camera-tab" data-view="mask">HSV 掩膜</button>
+      </div>
+      <button class="ctrl-btn" style="margin-left:auto;font-size:11px;padding:3px 8px"
+              onclick="snapshot()" title="保存当前画面截图">📸 截图</button>
+    </div>
+    <div class="camera-view" id="camera-view">
+      <img id="cam-feed" src="/video/annotated" alt="Camera Feed">
+    </div>
+  </div>
+
+  <!-- ── 检测结果面板 ──────────────────────────────────────────────────────── -->
+  <div class="panel detection-panel">
+    <div class="panel-header">
+      <span class="icon">🎯</span> 检测结果
+      <span style="margin-left:auto;font-size:11px;color:var(--text-dim)" id="det-count">0 个</span>
+    </div>
+    <div class="panel-body" style="padding:4px">
+      <table class="detection-table">
+        <thead>
+          <tr><th></th><th>颜色</th><th>像素坐标</th><th>世界坐标</th><th>面积</th><th>操作</th></tr>
+        </thead>
+        <tbody id="det-tbody">
+          <tr><td colspan="6" class="no-data">⏳ 等待检测结果…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── 关节控制面板 ──────────────────────────────────────────────────────── -->
+  <div class="panel joint-panel">
+    <div class="panel-header">
+      <span class="icon">🦾</span> 关节角度
+      <button class="ctrl-btn" style="margin-left:auto;font-size:11px;padding:3px 8px"
+              onclick="home()">🏠 回零</button>
+    </div>
+    <div class="panel-body">
+      <div id="joint-controls">
+        <div class="joint-row">
+          <span class="joint-label">🔵 底座</span>
+          <div class="joint-bar-wrap"><div class="joint-bar-fill base" id="bar-base" style="width:50%"></div></div>
+          <input type="range" class="joint-slider" id="slider-base" min="30" max="150" value="90"
+                 oninput="onJointSlider('base', this.value)">
+          <span class="joint-value" id="val-base">90°</span>
+        </div>
+        <div class="joint-row">
+          <span class="joint-label">🟢 左侧</span>
+          <div class="joint-bar-wrap"><div class="joint-bar-fill left" id="bar-left" style="width:50%"></div></div>
+          <input type="range" class="joint-slider" id="slider-left" min="30" max="150" value="90"
+                 oninput="onJointSlider('left', this.value)">
+          <span class="joint-value" id="val-left">90°</span>
+        </div>
+        <div class="joint-row">
+          <span class="joint-label">🟠 右侧</span>
+          <div class="joint-bar-wrap"><div class="joint-bar-fill right" id="bar-right" style="width:50%"></div></div>
+          <input type="range" class="joint-slider" id="slider-right" min="30" max="150" value="90"
+                 oninput="onJointSlider('right', this.value)">
+          <span class="joint-value" id="val-right">90°</span>
+        </div>
+        <div class="joint-row">
+          <span class="joint-label">🟣 夹爪</span>
+          <div class="joint-bar-wrap"><div class="joint-bar-fill claw" id="bar-claw" style="width:52%"></div></div>
+          <input type="range" class="joint-slider" id="slider-claw" min="10" max="73" value="73"
+                 oninput="onJointSlider('claw', this.value)">
+          <span class="joint-value" id="val-claw">73°</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 控制按钮面板 ──────────────────────────────────────────────────────── -->
+  <div class="panel control-panel">
+    <div class="panel-header"><span class="icon">🎮</span> 快捷控制</div>
+    <div class="panel-body">
+      <div class="ctrl-grid">
+        <button class="ctrl-btn accent" onclick="home()">🏠 回零位</button>
+        <button class="ctrl-btn warn" onclick="moveAllJoints()">📤 发送全部</button>
+        <button class="ctrl-btn" onclick="clawOpen()">🖐 张开夹爪</button>
+        <button class="ctrl-btn" onclick="clawClose()">✊ 闭合夹爪</button>
+        <button class="ctrl-btn" onclick="gesture('wave')">👋 挥手</button>
+        <button class="ctrl-btn" onclick="gesture('point')">👉 指向</button>
+        <button class="ctrl-btn" onclick="gesture('nod')">🙂 点头</button>
+        <button class="ctrl-btn" onclick="gesture('greet')">🤗 问候</button>
+        <button class="ctrl-btn success" id="btn-pick-red" onclick="pickColor('red')">🔴 抓红色</button>
+        <button class="ctrl-btn success" id="btn-pick-green" onclick="pickColor('green')">🟢 抓绿色</button>
+        <button class="ctrl-btn success" id="btn-pick-blue" onclick="pickColor('blue')">🔵 抓蓝色</button>
+        <button class="ctrl-btn success" id="btn-pick-yellow" onclick="pickColor('yellow')">🟡 抓黄色</button>
+        <button class="ctrl-btn" onclick="toggleHsvPanel()">🎨 HSV 调节</button>
+        <button class="ctrl-btn" onclick="toggleLog()" id="btn-log-toggle">📋 日志</button>
+        <button class="ctrl-btn danger" onclick="stopMotion()" id="btn-stop">🛑 急停回零</button>
+        <button class="ctrl-btn" onclick="toggleGestureRecog()" id="btn-gesture-toggle">✋ 手势识别: 开</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 串口监视器 ──────────────────────────────────────────────────────── -->
+  <div class="panel serial-panel">
+    <div class="panel-header">
+      <span class="icon">🔌</span> 串口监视器
+      <span style="margin-left:auto;font-size:11px;color:var(--text-dim)">
+        TX <span style="color:var(--accent)">■</span>
+        RX <span style="color:var(--green)">■</span>
+      </span>
+    </div>
+    <div class="panel-body" style="padding:4px 8px">
+      <div class="serial-log" id="serial-log">等待串口消息…</div>
+    </div>
+  </div>
+
+</div> <!-- /main-grid -->
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     底部日志栏
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<div class="log-panel" id="log-panel" onclick="toggleLog()">
+  <span class="log-toggle">📋 点击展开事件日志</span>
+  <span id="log-last" style="margin-left:12px;color:var(--text-dim)"></span>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     HSV 调节弹窗
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="hsv-modal">
+  <div class="modal">
+    <h3>🎨 HSV 颜色范围调节</h3>
+    <div style="margin-bottom:8px">
+      <label>目标颜色:</label>
+      <select id="hsv-color" onchange="loadHsv()">
+        <option value="red">红色 Red</option>
+        <option value="green">绿色 Green</option>
+        <option value="blue">蓝色 Blue</option>
+        <option value="yellow">黄色 Yellow</option>
+      </select>
+    </div>
+    <div class="hsv-row"><label>H 低</label><input type="range" id="h-lo" min="0" max="180" oninput="updateHsvLabel()"><span class="val" id="val-h-lo">0</span></div>
+    <div class="hsv-row"><label>H 高</label><input type="range" id="h-hi" min="0" max="180" oninput="updateHsvLabel()"><span class="val" id="val-h-hi">180</span></div>
+    <div class="hsv-row"><label>S 低</label><input type="range" id="s-lo" min="0" max="255" oninput="updateHsvLabel()"><span class="val" id="val-s-lo">0</span></div>
+    <div class="hsv-row"><label>S 高</label><input type="range" id="s-hi" min="0" max="255" oninput="updateHsvLabel()"><span class="val" id="val-s-hi">255</span></div>
+    <div class="hsv-row"><label>V 低</label><input type="range" id="v-lo" min="0" max="255" oninput="updateHsvLabel()"><span class="val" id="val-v-lo">0</span></div>
+    <div class="hsv-row"><label>V 高</label><input type="range" id="v-hi" min="0" max="255" oninput="updateHsvLabel()"><span class="val" id="val-v-hi">255</span></div>
+    <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="ctrl-btn" onclick="toggleHsvPanel()">取消</button>
+      <button class="ctrl-btn accent" onclick="applyHsv()">✅ 应用</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     JavaScript: SocketIO + UI 逻辑
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+<script>
+// ── SocketIO 连接 ──────────────────────────────────────────────────────────
+const socket = io();
+
+socket.on('connect', () => {
+  console.log('✅ 已连接工作台服务器');
+  addLog('✅ 浏览器已连接到工作台服务器');
+});
+
+socket.on('disconnect', () => {
+  addLog('❌ 与服务器断开连接');
+  updateStatus('serial', false);
+  updateStatus('camera', false);
+});
+
+// ── 状态更新 ───────────────────────────────────────────────────────────────
+socket.on('state_update', (data) => {
+  // 关节角度
+  if (data.joints) {
+    for (const [joint, angle] of Object.entries(data.joints)) {
+      updateJointUI(joint, angle);
+    }
+  }
+
+  // 检测结果
+  if (data.detections) {
+    updateDetections(data.detections);
+  }
+
+  // 状态指示
+  updateStatus('serial', data.serial_connected);
+  updateStatus('camera', data.camera_connected);
+  updateStatus('arm', data.arm_busy ? 'busy' : data.serial_connected);
+
+  // Camera source
+  const srcEl = document.getElementById('cam-source');
+  if (srcEl) srcEl.textContent = data.camera_source || '';
+
+  // FPS
+  const fpsEl = document.getElementById('fps-display');
+  fpsEl.textContent = `${data.vision_fps || '--'} FPS`;
+
+  // 手势
+  if (data.current_gesture) {
+    addLog(`🎭 手势执行中: ${data.current_gesture}`);
+  }
+});
+
+// ── 串口更新 ───────────────────────────────────────────────────────────────
+socket.on('serial_update', (data) => {
+  const logEl = document.getElementById('serial-log');
+  let html = '';
+  const all = [...(data.tx || []), ...(data.rx || [])].slice(-30);
+  for (const line of all) {
+    let cls = '';
+    if (line.includes('TX:')) cls = 'tx';
+    else if (line.includes('RX:')) cls = 'rx';
+    if (line.includes('ERR') || line.includes('超时')) cls = 'err';
+    html += `<div class="${cls}">${line}</div>`;
+  }
+  logEl.innerHTML = html || '等待串口消息…';
+  logEl.scrollTop = logEl.scrollHeight;
+});
+
+// ── 日志 ────────────────────────────────────────────────────────────────────
+socket.on('logs', (entries) => {
+  const panel = document.getElementById('log-panel');
+  if (panel.classList.contains('expanded')) {
+    renderLogs(entries);
+  }
+  // 最后一条作为状态栏提示
+  const last = entries[entries.length - 1] || '';
+  document.getElementById('log-last').textContent = last;
+});
+
+socket.on('error', (data) => {
+  addLog(`❌ ${data.msg}`);
+});
+
+// ── 截图 ────────────────────────────────────────────────────────────────────
+socket.on('snapshot_data', (data) => {
+  // 自动下载
+  const a = document.createElement('a');
+  a.href = data.image;
+  a.download = `mearm_snapshot_${new Date().toISOString().replace(/[:.]/g,'-')}.jpg`;
+  a.click();
+  addLog('📸 截图已下载');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UI 更新函数
+// ═══════════════════════════════════════════════════════════════════════════
+
+function updateJointUI(joint, angle) {
+  const slider = document.getElementById(`slider-${joint}`);
+  const val = document.getElementById(`val-${joint}`);
+  const bar = document.getElementById(`bar-${joint}`);
+  if (slider) slider.value = angle;
+  if (val) val.textContent = `${angle}°`;
+  if (bar) {
+    const min = parseInt(slider?.min || 0);
+    const max = parseInt(slider?.max || 180);
+    bar.style.width = ((angle - min) / (max - min) * 100) + '%';
+  }
+}
+
+function updateStatus(type, state) {
+  const dot = document.getElementById(`${type}-dot`);
+  if (!dot) return;
+  dot.className = 'dot';
+  if (state === 'busy') {
+    dot.classList.add('dot-busy');
+  } else if (state) {
+    dot.classList.add('dot-on');
+  } else {
+    dot.classList.add('dot-off');
+  }
+}
+
+function updateDetections(dets) {
+  const tbody = document.getElementById('det-tbody');
+  document.getElementById('det-count').textContent = `${dets.length} 个`;
+
+  if (dets.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="no-data">🔍 未检测到物体</td></tr>';
+    return;
+  }
+
+  const colorHex = {red:'#f85149', green:'#3fb950', blue:'#58a6ff', yellow:'#d2991d'};
+  let html = '';
+  for (const d of dets) {
+    const hex = colorHex[d.color] || '#888';
+    html += `<tr>
+      <td><span class="color-badge" style="background:${hex}"></span></td>
+      <td>${d.color}</td>
+      <td style="font-family:var(--mono);font-size:11px">(${d.cx}, ${d.cy})</td>
+      <td style="font-family:var(--mono);font-size:11px">(${d.x_mm}, ${d.y_mm})mm</td>
+      <td>${d.area}</td>
+      <td>
+        <button class="ctrl-btn" style="font-size:10px;padding:2px 6px"
+                onclick="pickColor('${d.color}')">🎯 抓取</button>
+      </td>
+    </tr>`;
+  }
+  tbody.innerHTML = html;
+}
+
+function addLog(msg) {
+  // 直接追加到展开的日志面板
+  const panel = document.getElementById('log-panel');
+  document.getElementById('log-last').textContent = msg;
+}
+
+function renderLogs(entries) {
+  const panel = document.getElementById('log-panel');
+  const lastEl = document.getElementById('log-last');
+  let html = '<div style="font-weight:600;padding:4px 0;color:var(--text-dim)">📋 事件日志 (点击收起)</div>';
+  for (const e of entries.slice(-100)) {
+    html += `<div class="log-entry">${e}</div>`;
+  }
+  panel.innerHTML = html;
+  panel.scrollTop = panel.scrollHeight;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 操作函数
+// ═══════════════════════════════════════════════════════════════════════════
+
+function onJointSlider(joint, value) {
+  updateJointUI(joint, parseInt(value));
+  // 实时发送单个关节指令
+  socket.emit('move_joint', { joint, angle: parseInt(value) });
+}
+
+function moveAllJoints() {
+  const angles = {};
+  for (const j of ['base', 'left', 'right', 'claw']) {
+    angles[j] = parseInt(document.getElementById(`slider-${j}`).value);
+  }
+  socket.emit('move_all', { angles });
+  addLog(`📤 发送全部关节: ${JSON.stringify(angles)}`);
+}
+
+function home() {
+  socket.emit('home');
+  addLog('🏠 回零指令已发送');
+}
+
+function clawOpen() {
+  socket.emit('claw_open');
+  addLog('🖐 张开夹爪');
+}
+
+function clawClose() {
+  socket.emit('claw_close');
+  addLog('✊ 闭合夹爪');
+}
+
+function gesture(name) {
+  socket.emit('gesture', { name });
+  addLog(`🎭 执行手势: ${name}`);
+}
+
+function pickColor(color) {
+  socket.emit('pick_color', { color });
+  addLog(`🎯 请求抓取: ${color}`);
+}
+
+function snapshot() {
+  socket.emit('snapshot');
+}
+
+// ── 语音/文本指令 ──────────────────────────────────────────────────────────
+function sendCommand() {
+  const input = document.getElementById('cmd-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  socket.emit('text_command', { text });
+}
+
+let voiceListening = false;
+function toggleVoice() {
+  voiceListening = !voiceListening;
+  socket.emit('toggle_voice', { enable: voiceListening });
+  const btn = document.getElementById('btn-voice');
+  btn.textContent = voiceListening ? '🎤 关闭' : '🎤 语音';
+  btn.style.borderColor = voiceListening ? 'var(--green)' : '';
+}
+
+socket.on('voice_status', (data) => {
+  voiceListening = data.listening;
+  const btn = document.getElementById('btn-voice');
+  btn.textContent = data.listening ? '🎤 关闭' : '🎤 语音';
+  btn.style.borderColor = data.listening ? 'var(--green)' : '';
+});
+
+socket.on('voice_reply', (data) => {
+  // 弹出 toast 显示机械臂的回复
+  const toast = document.getElementById('voice-toast');
+  toast.textContent = '🤖 ' + (data.text || '...');
+  toast.style.display = 'block';
+  toast.style.opacity = '1';
+  clearTimeout(toast._timeout);
+  toast._timeout = setTimeout(() => {
+    toast.style.opacity = '0';
+    setTimeout(() => { toast.style.display = 'none'; }, 300);
+  }, 4000);
+  addLog('🤖 回复: ' + data.text);
+});
+
+// ── 急停回零 ──────────────────────────────────────────────────────────────
+function stopMotion() {
+  socket.emit('stop_motion');
+  addLog('🛑 已发送急停命令');
+}
+
+// ── 手势识别开关 ──────────────────────────────────────────────────────────
+let gestureRecogOn = true;
+function toggleGestureRecog() {
+  gestureRecogOn = !gestureRecogOn;
+  socket.emit('toggle_gesture_recog', { enable: gestureRecogOn });
+  const btn = document.getElementById('btn-gesture-toggle');
+  btn.textContent = gestureRecogOn ? '✋ 手势识别: 开' : '✋ 手势识别: 关';
+  btn.style.borderColor = gestureRecogOn ? 'var(--green)' : 'var(--red)';
+}
+
+// 保持按钮状态与服务端同步
+socket.on('state_update', (state) => {
+  if (state.gesture_recog_enabled !== undefined) {
+    gestureRecogOn = state.gesture_recog_enabled;
+    const btn = document.getElementById('btn-gesture-toggle');
+    if (btn) {
+      btn.textContent = gestureRecogOn ? '✋ 手势识别: 开' : '✋ 手势识别: 关';
+      btn.style.borderColor = gestureRecogOn ? 'var(--green)' : 'var(--red)';
+    }
+  }
+});
+
+// ── 摄像头视图切换 ────────────────────────────────────────────────────────
+document.querySelectorAll('.camera-tab').forEach(tab => {
+  tab.addEventListener('click', function() {
+    document.querySelectorAll('.camera-tab').forEach(t => t.classList.remove('active'));
+    this.classList.add('active');
+    const view = this.dataset.view;
+    const img = document.getElementById('cam-feed');
+    const streamMap = {
+      'raw': '/video/raw',
+      'mask': '/video/mask',
+      'annotated': '/video/annotated',
+    };
+    img.src = streamMap[view] || '/video/annotated';
+  });
+});
+
+// ── 日志面板展开/收起 ────────────────────────────────────────────────────
+function toggleLog() {
+  const panel = document.getElementById('log-panel');
+  const wasExpanded = panel.classList.contains('expanded');
+
+  if (wasExpanded) {
+    // 收起
+    panel.classList.remove('expanded');
+    panel.innerHTML = '<span class="log-toggle">📋 点击展开事件日志</span>' +
+      '<span id="log-last" style="margin-left:12px;color:var(--text-dim)"></span>';
+  } else {
+    // 展开 — 请求日志数据
+    panel.classList.add('expanded');
+    fetch('/api/logs')
+      .then(r => r.json())
+      .then(entries => renderLogs(entries))
+      .catch(() => {
+        panel.innerHTML = '<div class="log-entry">加载日志失败</div>';
+      });
+  }
+}
+
+// ── HSV 调节面板 ──────────────────────────────────────────────────────────
+async function toggleHsvPanel() {
+  const modal = document.getElementById('hsv-modal');
+  const isShowing = modal.classList.contains('show');
+
+  if (isShowing) {
+    modal.classList.remove('show');
+  } else {
+    // 加载当前 HSV 值
+    const resp = await fetch('/api/hsv');
+    const hsvData = await resp.json();
+    window._hsvData = hsvData;
+    loadHsv();
+    modal.classList.add('show');
+  }
+}
+
+function loadHsv() {
+  const color = document.getElementById('hsv-color').value;
+  const data = window._hsvData?.[color];
+  if (!data) return;
+
+  document.getElementById('h-lo').value = data.lo[0];
+  document.getElementById('h-hi').value = data.hi[0];
+  document.getElementById('s-lo').value = data.lo[1];
+  document.getElementById('s-hi').value = data.hi[1];
+  document.getElementById('v-lo').value = data.lo[2];
+  document.getElementById('v-hi').value = data.hi[2];
+  updateHsvLabel();
+}
+
+function updateHsvLabel() {
+  document.getElementById('val-h-lo').textContent = document.getElementById('h-lo').value;
+  document.getElementById('val-h-hi').textContent = document.getElementById('h-hi').value;
+  document.getElementById('val-s-lo').textContent = document.getElementById('s-lo').value;
+  document.getElementById('val-s-hi').textContent = document.getElementById('s-hi').value;
+  document.getElementById('val-v-lo').textContent = document.getElementById('v-lo').value;
+  document.getElementById('val-v-hi').textContent = document.getElementById('v-hi').value;
+}
+
+function applyHsv() {
+  const color = document.getElementById('hsv-color').value;
+  const lo = [
+    parseInt(document.getElementById('h-lo').value),
+    parseInt(document.getElementById('s-lo').value),
+    parseInt(document.getElementById('v-lo').value),
+  ];
+  const hi = [
+    parseInt(document.getElementById('h-hi').value),
+    parseInt(document.getElementById('s-hi').value),
+    parseInt(document.getElementById('v-hi').value),
+  ];
+  socket.emit('update_hsv', { color, lo, hi });
+  addLog(`🎨 HSV 已更新: ${color} lo=${lo} hi=${hi}`);
+  document.getElementById('hsv-modal').classList.remove('show');
+}
+
+// ── 点击弹窗背景关闭 ──────────────────────────────────────────────────────
+document.getElementById('hsv-modal').addEventListener('click', function(e) {
+  if (e.target === this) this.classList.remove('show');
+});
+
+// ── 初始加载日志 ──────────────────────────────────────────────────────────
+fetch('/api/logs')
+  .then(r => r.json())
+  .then(entries => {
+    const last = entries[entries.length - 1] || '';
+    document.getElementById('log-last').textContent = last;
+  });
+
+console.log('🚀 MeArm 工作台前端就绪');
+</script>
+</body>
+</html>
