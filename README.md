@@ -87,8 +87,8 @@ MeArm V1.0 为开源设计，主体由一片 A4 大小的 3mm 亚克力板激光
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/<your-username>/mearm-workbench.git
-cd mearm-workbench
+git clone https://github.com/dingkaihu63/mearm-embodied-demo.git
+cd mearm-embodied-demo
 ```
 
 ### 2. 安装 Python 依赖
