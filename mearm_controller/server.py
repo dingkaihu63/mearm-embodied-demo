@@ -116,6 +116,12 @@ def main():
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument("--ollama-url", default=None,
                         help="Ollama API 地址 (默认 http://localhost:11434/v1)")
+    parser.add_argument("--api-key", default=None,
+                        help="云端 LLM API Key (OpenAI 兼容, 如 DeepSeek)")
+    parser.add_argument("--api-base-url", default=None,
+                        help="云端 LLM API 地址 (默认 https://api.deepseek.com)")
+    parser.add_argument("--vision-api-key", default=None,
+                        help="云端多模态视觉 API Key (如 Moonshot/Kimi)")
     parser.add_argument("--no-llm", action="store_true", help="仅关键词模式, 跳过 LLM")
     parser.add_argument("--no-voice", action="store_true", help="禁用语音识别")
     parser.add_argument("--unsafe", action="store_true", help="关闭安全模式 (需外接电源)")
@@ -141,10 +147,16 @@ def main():
     ╚══════════════════════════════════════════════╝
     """)
 
-    # ── LLM 初始化 (Ollama) ─────────────────────────────────────────────
+    # ── LLM 初始化 (Ollama / 云端 API 自适应) ──────────────────────────
+    import mearm_controller.config as cfg
     if args.ollama_url:
-        import mearm_controller.config as cfg
         cfg.OLLAMA_BASE_URL = args.ollama_url
+    if args.api_key:
+        cfg.LLM_API_KEY = args.api_key
+    if args.api_base_url:
+        cfg.LLM_API_BASE_URL = args.api_base_url
+    if args.vision_api_key:
+        cfg.VISION_API_KEY = args.vision_api_key
 
     # ── 初始化子系统 ──────────────────────────────────────────────────────────
     arm = ArmSerial(args.port)
@@ -512,7 +524,13 @@ def main():
     # 状态日志
     state.add_log("🚀 MeArm 工作台已启动")
     if llm:
-        state.add_log("🧠 LLM 模式 (Ollama)")
+        provider = getattr(llm, '_provider', 'ollama')
+        provider_label = {"cloud": "☁️ 云端 API", "ollama": "🖥️ Ollama"}
+        state.add_log(f"🧠 LLM 模式 ({provider_label.get(provider, provider)})")
+        if getattr(llm, '_vision_model', None):
+            vp = getattr(llm, '_vision_provider', 'ollama')
+            vp_label = {"cloud": "☁️ 云端视觉", "ollama": "🖥️ Ollama 视觉"}
+            state.add_log(f"👁️ 多模态视觉 ({vp_label.get(vp, vp)}: {llm._vision_model})")
     else:
         state.add_log("📝 关键词模式")
 

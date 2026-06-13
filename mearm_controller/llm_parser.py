@@ -12,7 +12,13 @@ import threading
 from typing import Optional
 
 from .config import (
-    LLM_SYSTEM_PROMPT, OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_VISION_MODEL,
+    LLM_SYSTEM_PROMPT,
+    # 云端 API
+    LLM_API_KEY, LLM_API_BASE_URL, LLM_API_MODEL,
+    VISION_API_KEY, VISION_API_BASE_URL, VISION_API_MODEL,
+    VISION_API_TEMPERATURE,
+    # 本地 Ollama
+    OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_VISION_MODEL,
     LLM_TIMEOUT, LLM_MAX_TOKENS, COLOR_CN, YOLO_CN_CLASS, log,
 )
 from .shared_state import state
@@ -20,11 +26,21 @@ from .speaker import Speaker
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LLM 意图解析器 (Ollama 本地 LLM)
+# LLM 意图解析器 (本地 Ollama / 云端 API 自适应)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class LLMIntentParser:
-    """调用本地 Ollama LLM 将文本/图片解析为结构化动作."""
+    """调用 LLM 将文本/图片解析为结构化动作.
+
+    自动检测提供者:
+    - 设置 LLM_API_KEY 环境变量 → 云端 API (DeepSeek/OpenAI 等)
+    - 未设置 → 本地 Ollama
+
+    多模态视觉:
+    - 设置 VISION_API_KEY → 云端视觉 API (Kimi/GPT-4V 等)
+    - 设置 OLLAMA_VISION_MODEL → Ollama 视觉模型 (llava 等)
+    - 均未设置 → 纯文本模式
+    """
 
     # 语音回复系统提示词 — 简短自然口语化
     REPLY_SYSTEM_PROMPT = (
@@ -37,16 +53,63 @@ class LLMIntentParser:
     def __init__(self, system_prompt: Optional[str] = None):
         self._available = False
         self._system_prompt = system_prompt or LLM_SYSTEM_PROMPT
-        self._model = OLLAMA_MODEL
-        self._vision_model = OLLAMA_VISION_MODEL or None
+
+        # ── 检测 LLM 提供者: 云端 API > 本地 Ollama ─────────────────
+        if LLM_API_KEY:
+            self._provider = "cloud"
+            self._model = LLM_API_MODEL
+            self._base_url = LLM_API_BASE_URL
+            self._api_key = LLM_API_KEY
+        else:
+            self._provider = "ollama"
+            self._model = OLLAMA_MODEL
+            self._base_url = OLLAMA_BASE_URL
+            self._api_key = "ollama"  # Ollama 忽略 api_key 但 SDK 要求非空
+
+        # ── 检测视觉提供者: 云端视觉 > Ollama 视觉 > 无 ────────────
+        self._vision_client = None
+        if VISION_API_KEY:
+            self._vision_provider = "cloud"
+            self._vision_model = VISION_API_MODEL
+            self._vision_base_url = VISION_API_BASE_URL
+            self._vision_api_key = VISION_API_KEY
+        elif OLLAMA_VISION_MODEL:
+            self._vision_provider = "ollama"
+            self._vision_model = OLLAMA_VISION_MODEL
+            self._vision_base_url = OLLAMA_BASE_URL
+            self._vision_api_key = "ollama"
+        else:
+            self._vision_provider = None
+            self._vision_model = None
+            self._vision_base_url = None
+            self._vision_api_key = None
+
         try:
             from openai import OpenAI
             self._client = OpenAI(
-                base_url=OLLAMA_BASE_URL,
-                api_key="ollama",  # Ollama 忽略 api_key 但 SDK 要求非空
+                base_url=self._base_url,
+                api_key=self._api_key,
             )
+            # 如果视觉提供者与文本提供者不同, 创建独立客户端
+            if (self._vision_provider and
+                    self._vision_base_url != self._base_url):
+                self._vision_client = OpenAI(
+                    base_url=self._vision_base_url,
+                    api_key=self._vision_api_key,
+                )
+            else:
+                self._vision_client = self._client
             self._available = True
-            state.add_log(f"🧠 Ollama LLM 已就绪 (模型: {self._model})")
+
+            provider_label = {"cloud": "☁️ 云端", "ollama": "🖥️ Ollama"}
+            state.add_log(
+                f"🧠 LLM 已就绪 ({provider_label.get(self._provider, self._provider)}: {self._model})"
+            )
+            if self._vision_model:
+                vp_label = {"cloud": "☁️ 云端视觉", "ollama": "🖥️ Ollama 视觉"}
+                state.add_log(
+                    f"👁️ 多模态视觉已就绪 ({vp_label.get(self._vision_provider, self._vision_provider)}: {self._vision_model})"
+                )
         except ImportError:
             state.add_log("⚠️ openai 包未安装 — LLM 已禁用")
         except Exception as e:
@@ -59,10 +122,17 @@ class LLMIntentParser:
     # ── API 调用核心 ───────────────────────────────────────────────────
 
     def _call_api(self, content, use_vision: bool = False) -> Optional[dict]:
-        """调用 Ollama API, 返回解析后的意图 dict."""
+        """调用 LLM API, 返回解析后的意图 dict.
+
+        Args:
+            content: 消息内容 (字符串或 multimodal 列表)
+            use_vision: 是否使用视觉模型 (自动选择客户端和 temperature)
+        """
+        client = self._vision_client if use_vision and self._vision_client else self._client
         model = self._vision_model if use_vision and self._vision_model else self._model
+        temperature = VISION_API_TEMPERATURE if use_vision else 0.1
         try:
-            resp = self._client.chat.completions.create(
+            resp = client.chat.completions.create(
                 model=model,
                 max_tokens=LLM_MAX_TOKENS,
                 timeout=LLM_TIMEOUT,
@@ -71,13 +141,13 @@ class LLMIntentParser:
                     {"role": "system", "content": self._system_prompt},
                     {"role": "user", "content": content},
                 ],
-                temperature=0.1,
+                temperature=temperature,
             )
             raw = resp.choices[0].message.content.strip()
-            log.info(f"LLM 原始回复: {raw[:200]}")
+            log.info(f"LLM 原始回复 ({model}): {raw[:200]}")
             return self._extract_json(raw)
         except Exception as e:
-            log.error(f"LLM 调用失败: {e}")
+            log.error(f"LLM 调用失败 ({model}): {e}")
             return None
 
     # ── 纯文本解析 ────────────────────────────────────────────────────

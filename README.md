@@ -32,7 +32,7 @@
 
 | 功能 | 说明 |
 |------|------|
-| 🧠 **LLM 意图解析** | 通过本地 Ollama LLM 将自然语言转换为机械臂动作 |
+| 🧠 **LLM 意图解析** | Ollama 本地 / 云端 API 自适应，自然语言→机械臂动作 |
 | 🎤 **离线语音识别** | Vosk 中英文双模型并行，无需联网 |
 | ✋ **手势控制** | MediaPipe 手部关键点检测，6 种手势识别 |
 | 👁️ **视觉感知** | YOLOv8s 深度学习 (80类) + HSV 颜色 + Ollama Vision API 回退 |
@@ -154,9 +154,12 @@ python -m mearm_controller.server --port COM3 --cam 1
 
 ```
 --port PORT          Arduino 串口 (如 COM3)
---cam INDEX          摄像头索引 (默认 0)
+--cam INDEX          摄像头索引 (默认 0, 可用 'auto')
 --ip-cam URL         手机 IP 摄像头 URL
 --ollama-url URL     Ollama API 地址 (默认 http://localhost:11434/v1)
+--api-key KEY        云端 LLM API Key (OpenAI 兼容, 如 DeepSeek)
+--api-base-url URL   云端 LLM API 地址 (默认 https://api.deepseek.com)
+--vision-api-key KEY 云端多模态视觉 API Key (如 Moonshot/Kimi)
 --no-llm             仅关键词模式, 跳过 LLM
 --no-voice           禁用语音识别
 --no-browser         不自动打开浏览器
@@ -234,11 +237,19 @@ mearm-workbench/
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama API 地址 |
-| `OLLAMA_MODEL` | `qwen2.5:7b` | 文本 LLM 模型 |
-| `OLLAMA_VISION_MODEL` | (空) | 视觉多模态模型 (如 `llava`) |
+| `OLLAMA_MODEL` | `qwen2.5:7b` | 本地文本 LLM 模型 |
+| `OLLAMA_VISION_MODEL` | (空) | 本地视觉模型 (如 `llava`) |
+| `LLM_API_KEY` | (空) | 云端 API Key (设置后自动切换为云端) |
+| `LLM_API_BASE_URL` | `https://api.deepseek.com` | 云端 API 地址 |
+| `LLM_API_MODEL` | `deepseek-chat` | 云端 LLM 模型 |
+| `VISION_API_KEY` | (空) | 云端多模态视觉 API Key |
+| `VISION_API_BASE_URL` | `https://api.moonshot.cn/v1` | 云端视觉 API 地址 |
+| `VISION_API_MODEL` | `kimi-k2.6` | 云端视觉模型 |
 | `VOSK_MODEL_CN` | `models/vosk-model-small-cn` | 中文语音模型路径 |
 | `VOSK_MODEL_EN` | `models/vosk-model-small-en-us-0.15` | 英文语音模型路径 |
 | `FLASK_SECRET_KEY` | 自动生成 | Flask 会话密钥 |
+
+> 💡 **LLM 提供者选择**: 不设 `LLM_API_KEY` 时默认使用本地 Ollama；设置后自动切换为云端 API。视觉模型同理: 不设 `VISION_API_KEY` 时尝试 `OLLAMA_VISION_MODEL`。
 
 ---
 
@@ -275,10 +286,10 @@ graph TD
 **流程说明：**
 
 1. **感知层** — Vosk 离线语音识别（中/英双模型）、MediaPipe 手势关键点检测、OpenCV HSV 颜色定位，三者并行感知用户意图和桌面环境
-2. **推理层** — 30 条结构化关键词规则提供零延迟快匹配；未命中时由本地 Ollama LLM（默认 qwen2.5:7b）做语义理解，可选配视觉模型（如 llava）实现多模态画面推理
+2. **推理层** — 30 条结构化关键词规则提供零延迟快匹配；未命中时由 LLM 做语义理解（默认本地 Ollama qwen2.5:7b，可选配云端 DeepSeek 等 API）。可选配视觉模型（本地 llava 或云端 Kimi/GPT-4V）实现多模态画面推理
 3. **行动层** — 解析后的意图经逆运动学解算为舵机角度，通过串口发送给 Arduino 执行；同时 Edge-TTS 合成自然语音回复
 
-> 全程 **无需联网**：所有计算（语音识别、手势检测、LLM 推理、语音合成）都在本地完成。
+> 默认配置下**无需联网**：所有计算（语音识别、手势检测、LLM 推理、语音合成）都在本地完成。也可通过 `.env` 配置云端 API 以获得更强的推理能力。
 
 ---
 

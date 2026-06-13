@@ -225,6 +225,22 @@ JSON 格式:
 - 无法理解 → action="say", message="抱歉，我不太明白"
 - 【绝对不要输出 json 以外的任何文字】"""
 
+# ─── 云端 LLM API (OpenAI 兼容, 可选) ───────────────────────────────────
+# 设置 LLM_API_KEY 后自动使用云端 API；未设置则回退到本地 Ollama
+# 支持 DeepSeek, OpenAI, 或其他 OpenAI 兼容 API
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_API_BASE_URL = os.getenv("LLM_API_BASE_URL", "https://api.deepseek.com")
+LLM_API_MODEL = os.getenv("LLM_API_MODEL", "deepseek-chat")
+
+# ─── 云端多模态视觉 API (OpenAI 兼容, 可选) ─────────────────────────────
+# 设置后用于摄像头画面理解 (图片+文本联合推理)
+# 支持 Kimi/Moonshot, GPT-4V, 或其他 OpenAI 兼容多模态 API
+VISION_API_KEY = os.getenv("VISION_API_KEY", "")
+VISION_API_BASE_URL = os.getenv("VISION_API_BASE_URL", "https://api.moonshot.cn/v1")
+VISION_API_MODEL = os.getenv("VISION_API_MODEL", "kimi-k2.6")
+# 视觉模型 temperature (Kimi 等模型要求 temperature=1)
+VISION_API_TEMPERATURE = float(os.getenv("VISION_API_TEMPERATURE", "1.0"))
+
 # ─── Ollama (本地 LLM) ────────────────────────────────────────────────────
 # 安装 Ollama: https://ollama.com
 # 拉取模型: ollama pull qwen2.5:7b
