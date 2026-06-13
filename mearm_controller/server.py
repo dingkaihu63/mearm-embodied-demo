@@ -41,6 +41,7 @@ from .speaker import Speaker
 from .gesture_recognizer import GestureRecognizer
 from .llm_parser import LLMIntentParser, llm_speak
 from .routes import create_app, register_routes, _pick_and_place
+from .spatial_memory import spatial
 
 # ─── 自学习库 (可选) ──────────────────────────────────────────────────────────
 try:
@@ -206,9 +207,9 @@ def main():
     socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading",
                         ping_interval=5, ping_timeout=30)
 
-    # 注册路由 (传入语音/LLM/自学习组件)
+    # 注册路由 (传入语音/LLM/自学习/空间记忆组件)
     register_routes(app, socketio, arm, llm, speaker, listener, gesture_recog,
-                    memory=memory, prompt_adapter=prompt_adapter)
+                    memory=memory, prompt_adapter=prompt_adapter, spatial=spatial)
 
     # 启动视觉 + 手势线程
     vis_thread = threading.Thread(
@@ -237,20 +238,27 @@ def main():
                 gesture_text = f"用户做了手势: {gcn} (gesture: {gesture_name})"
                 visible_colors = [d.color for d in state.detections]
 
-                # ── 分层意图解析: 关键词 → Ollama LLM ──
+                # ── 空间记忆上下文 ──────────────────────────────────────
+                spatial_context = spatial.get_context_text() if not spatial.is_empty else ""
+
+                # ── 分层意图解析: 关键词(含空间记忆) → Ollama LLM ──
                 intent = LLMIntentParser.keyword_fallback(
-                    gesture_name, visible_colors)
+                    gesture_name, visible_colors, spatial=spatial)
 
                 if (intent is None or intent.get("confidence", 0) < 0.5) and llm:
-                    # 尝试带画面的多模态解析 (如果配置了视觉模型)
+                    # 尝试带画面的多模态解析 (注入空间上下文)
                     frame = state.raw_frame
                     if frame is not None and llm._vision_model:
-                        llm_intent = llm.parse_with_image(gesture_text, frame, visible_colors)
+                        llm_intent = llm.parse_with_image(gesture_text, frame, visible_colors,
+                                                          spatial_context=spatial_context)
                         if llm_intent and llm_intent.get("confidence", 0) >= 0.5:
                             intent = llm_intent
                             state.add_log("🎯 Ollama 视觉解析生效 (手势)")
                     else:
-                        llm_intent = llm.parse(gesture_text, visible_colors)
+                        context_text = gesture_text
+                        if spatial_context:
+                            context_text = f"{spatial_context}\n{gesture_text}"
+                        llm_intent = llm.parse(context_text, visible_colors)
                         if llm_intent:
                             intent = llm_intent
                             state.add_log("🧠 Ollama 解析生效 (手势)")
@@ -289,7 +297,9 @@ def main():
                         def _g_pick():
                             _pick_and_place(arm, target.x_mm, target.y_mm,
                                             llm=llm, color=color,
-                                            visible_colors=visible_colors)
+                                            visible_colors=visible_colors,
+                                            spatial=spatial,
+                                            input_type="gesture", raw_input=gesture_name)
                             state.arm_busy = False
                             state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
                             llm_speak(speaker, llm,
@@ -364,25 +374,32 @@ def main():
                 state.last_voice_text = text
                 visible_colors = [d.color for d in state.detections]
 
-                # ── 分层意图解析: 关键词 → Ollama LLM ──
+                # ── 空间记忆上下文 ──────────────────────────────────────
+                spatial_context = spatial.get_context_text() if not spatial.is_empty else ""
+
+                # ── 分层意图解析: 关键词(含空间记忆) → Ollama LLM ──
                 intent = None
 
-                # 1. 关键词快速匹配 (无需 LLM)
-                intent = LLMIntentParser.keyword_fallback(text, visible_colors)
+                # 1. 关键词快速匹配 (含空间记忆查询)
+                intent = LLMIntentParser.keyword_fallback(text, visible_colors, spatial=spatial)
                 if intent and intent.get("confidence", 0) >= 0.5:
                     state.add_log(f"📝 关键词匹配: '{text}' → {intent.get('action', '?')}")
 
-                # 2. 低置信度时尝试 LLM 解析
+                # 2. 低置信度时尝试 LLM 解析 (注入空间上下文)
                 if (intent is None or intent.get("confidence", 0) < 0.5) and llm:
                     # 尝试带画面的多模态解析 (如果配置了视觉模型)
                     frame = state.raw_frame
                     if frame is not None and llm._vision_model:
-                        llm_intent = llm.parse_with_image(text, frame, visible_colors)
+                        llm_intent = llm.parse_with_image(text, frame, visible_colors,
+                                                          spatial_context=spatial_context)
                         if llm_intent and llm_intent.get("confidence", 0) >= 0.5:
                             intent = llm_intent
                             state.add_log(f"🎯 Ollama 视觉解析: '{text}' → {llm_intent.get('action', '?')}")
                     else:
-                        llm_intent = llm.parse(text, visible_colors)
+                        context_text = text
+                        if spatial_context:
+                            context_text = f"{spatial_context}\n用户说: {text}"
+                        llm_intent = llm.parse(context_text, visible_colors)
                         if llm_intent:
                             intent = llm_intent
                             state.add_log(f"🧠 Ollama 解析: '{text}' → {llm_intent.get('action', '?')}")
@@ -419,7 +436,9 @@ def main():
                         def _pick():
                             _pick_and_place(arm, target.x_mm, target.y_mm,
                                             llm=llm, color=color,
-                                            visible_colors=visible_colors)
+                                            visible_colors=visible_colors,
+                                            spatial=spatial,
+                                            input_type="voice", raw_input=text)
                             state.arm_busy = False
                             state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
                             llm_speak(speaker, llm,

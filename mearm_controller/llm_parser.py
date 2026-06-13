@@ -152,12 +152,17 @@ class LLMIntentParser:
 
     # ── 纯文本解析 ────────────────────────────────────────────────────
 
-    def parse(self, text: str, visible_colors: list[str]) -> Optional[dict]:
+    def parse(self, text: str, visible_colors: list[str],
+             spatial_context: str = "") -> Optional[dict]:
         if not self._available:
             return None
+        context_part = ""
+        if spatial_context:
+            context_part = f"\n{spatial_context}\n"
         user_msg = (
             f"命令: \"{text}\"\n"
             f"可见物体: {visible_colors if visible_colors else ['无']}\n"
+            f"{context_part}"
             f"请返回 json 格式的意图解析结果."
         )
         return self._call_api(user_msg)
@@ -165,7 +170,8 @@ class LLMIntentParser:
     # ── 多模态解析 (图片 + 文本, 需要视觉模型) ──────────────────────
 
     def parse_with_image(self, text: str, image_bgr,
-                         visible_colors: list[str]) -> Optional[dict]:
+                         visible_colors: list[str],
+                         spatial_context: str = "") -> Optional[dict]:
         """多模态意图解析 — 将摄像头画面 + 文本发送给 Ollama 视觉模型.
 
         需要配置 OLLAMA_VISION_MODEL 环境变量 (如 llava, qwen2.5-vl:7b).
@@ -180,6 +186,10 @@ class LLMIntentParser:
                                [cv2.IMWRITE_JPEG_QUALITY, 60])
         img_b64 = base64.b64encode(jpeg.tobytes()).decode("ascii")
 
+        context_part = ""
+        if spatial_context:
+            context_part = f"\n{spatial_context}\n"
+
         user_content = [
             {"type": "image_url",
              "image_url": {"url": f"data:image/jpeg;base64,{img_b64}",
@@ -188,7 +198,8 @@ class LLMIntentParser:
              "text": (
                  f"用户说: \"{text}\"\n"
                  f"HSV 检测到的颜色: {visible_colors if visible_colors else ['无']}\n"
-                 f"请观察画面中的物体和手势，结合语音，返回 json 意图."
+                 f"{context_part}"
+                 f"请观察画面中的物体和手势，结合语音和空间记忆，返回 json 意图."
              )},
         ]
         return self._call_api(user_content, use_vision=True)
@@ -442,6 +453,12 @@ class LLMIntentParser:
          {"action": "say",
           "message": "我可以语音控制抓取物体、做手势、回零。试试说'你好'或'抓红色'~",
           "confidence": 0.9}),
+
+        # ── 14. 空间记忆引用 ───────────────────────────────────────────
+        (["刚才放的", "刚刚放的", "上次放的", "刚放的那个", "刚才那个", "刚刚那个",
+          "上次那个", "上一个", "刚放的东西", "刚刚放的东西", "刚才放的东西"],
+         {"action": "_spatial_lookup_last_placed", "confidence": 1.0,
+          "message": "让我回想一下刚刚放了什么..."}),
     ]
 
     # ─── 抓取动词 ───────────────────────────────────────────────────────
@@ -449,14 +466,21 @@ class LLMIntentParser:
                   "搬运", "移动", "搬", "夹取", "抓取", "拾取", "捡起"]
 
     @staticmethod
-    def keyword_fallback(text: str, visible_colors: list[str]) -> dict:
+    def keyword_fallback(text: str, visible_colors: list[str],
+                         spatial=None) -> dict:
         """结构化关键词匹配.
 
         优先级:
+        0. 空间记忆引用 (spatial memory lookup, 如果 spatial 可用)
         1. 颜色 + 抓取动词 → pick_and_place
         2. 结构化规则表 (KEYWORD_RULES, 按定义顺序)
         3. 部分关键词匹配 (回零, 停止等)
-        4. 未知 → 返回低置信度, 交给上层 LLM/Kimi
+        4. 未知 → 返回低置信度, 交给上层 LLM
+
+        Args:
+            text: 用户输入文本
+            visible_colors: 摄像头可见颜色列表
+            spatial: 可选的空间记忆库 (SpatialMemory)
         """
         t = text.lower()
 
@@ -486,6 +510,46 @@ class LLMIntentParser:
                             "confidence": 0.85}
                 break  # 一个文本最多匹配一个物体名
 
+        # ── A3. 空间记忆引用 (spatial memory lookup) ──────────────────────
+        if spatial is not None and not spatial.is_empty:
+            take_back_keywords = ["拿回来", "取回来", "拿回去", "拿过来", "取过来",
+                                  "放回去", "放回来", "拣回来", "捡回来",
+                                  "拿回", "取回", "带回", "搬回"]
+            has_take_back = any(k in t for k in take_back_keywords)
+
+            if has_take_back:
+                last = spatial.last_placed()
+                if last:
+                    col_name = COLOR_CN.get(last.color, last.color)
+                    desc = last.object_desc or col_name
+                    return {"action": "pick_and_place",
+                            "color": last.color,
+                            "class_name": last.class_name or None,
+                            "gesture": None,
+                            "message": f"好的，我去把{desc}拿回来。",
+                            "confidence": 0.8}
+
+            # 用户说 "刚才放的是什么" / "刚才放的XX"
+            if any(k in t for k in ["刚才放的", "刚刚放的", "上次放的", "刚放的那个",
+                                      "刚才那个", "刚刚那个", "上次那个"]):
+                last = spatial.last_placed()
+                if last:
+                    col_name = COLOR_CN.get(last.color, last.color)
+                    desc = last.object_desc or col_name
+                    if any(v in t for v in LLMIntentParser.PICK_VERBS + ["拿", "取", "捡", "移动", "搬"]):
+                        return {"action": "pick_and_place",
+                                "color": last.color,
+                                "class_name": last.class_name or None,
+                                "gesture": None,
+                                "message": f"好的，我来处理{desc}。",
+                                "confidence": 0.8}
+                    else:
+                        return {"action": "say",
+                                "color": None, "class_name": None,
+                                "gesture": None,
+                                "message": f"刚刚放的是{desc}，在({last.drop_x:.0f}, {last.drop_y:.0f})mm 处。",
+                                "confidence": 0.9}
+
         # ── B. 遍历结构化规则表 ────────────────────────────────────────
         for keywords, intent in LLMIntentParser.KEYWORD_RULES:
             if any(k in t for k in keywords):
@@ -493,6 +557,32 @@ class LLMIntentParser:
                 result.setdefault("color", None)
                 result.setdefault("class_name", None)
                 result.setdefault("gesture", None)
+
+                # ── 处理空间记忆查找动作 ──────────────────────────────
+                if result.get("action", "").startswith("_spatial_lookup"):
+                    if spatial is not None and not spatial.is_empty:
+                        last = spatial.last_placed()
+                        if last:
+                            col_name = COLOR_CN.get(last.color, last.color)
+                            desc = last.object_desc or col_name
+                            result = {
+                                "action": "say",
+                                "color": last.color,
+                                "class_name": last.class_name or None,
+                                "gesture": None,
+                                "message": f"刚刚放的是{desc}，在({last.drop_x:.0f}, {last.drop_y:.0f})mm 处。",
+                                "confidence": 0.9,
+                            }
+                            return result
+                        else:
+                            return {"action": "say", "color": None, "class_name": None,
+                                    "gesture": None,
+                                    "message": "我还没放过任何东西呢。", "confidence": 0.9}
+                    else:
+                        return {"action": "say", "color": None, "class_name": None,
+                                "gesture": None,
+                                "message": "空间记忆未启用，无法查询历史。", "confidence": 0.5}
+
                 # 如果是 pick_and_place 且没指定颜色, 用 visible 中第一个
                 if result.get("action") == "pick_and_place" and not result.get("color"):
                     if visible_colors:

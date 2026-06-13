@@ -34,6 +34,7 @@ from .llm_parser import LLMIntentParser, llm_speak
 from .speaker import Speaker
 from .voice_listener import VoiceListener
 from .gesture_recognizer import GestureRecognizer
+from .spatial_memory import SpatialMemory
 
 # ─── 自学习库 (可选) ──────────────────────────────────────────────────────────
 try:
@@ -62,10 +63,14 @@ def _pick_and_place(arm: ArmSerial, x_mm: float, y_mm: float,
                    llm: Optional[LLMIntentParser] = None,
                    color: str = "",
                    class_name: str = "",
-                   visible_colors: Optional[list[str]] = None):
+                   visible_colors: Optional[list[str]] = None,
+                   spatial: Optional["SpatialMemory"] = None,
+                   input_type: str = "",
+                   raw_input: str = ""):
     """LLM 增强的 pick-and-place 序列.
 
     优先使用 LLM 规划策略，LLM 不可用时回退到硬编码默认值。
+    如果传入 spatial，操作完成后自动记录到空间记忆。
     """
     # ── 获取 LLM 策略 ──────────────────────────────────────────────────────
     strategy = IKLLMEnhancer.plan_pick_sequence(
@@ -132,6 +137,18 @@ def _pick_and_place(arm: ArmSerial, x_mm: float, y_mm: float,
     state.update_joints(dict(HOME_ANGLES))
     state.add_log("✅ 抓取放置完成")
 
+    # ── 空间记忆: 记录此次放置操作 ─────────────────────────────────────
+    if spatial is not None:
+        spatial.record_placement(
+            color=color,
+            class_name=class_name,
+            pick_x=x_mm, pick_y=y_mm, pick_z=0.0,
+            drop_x=drop_x, drop_y=drop_y, drop_z=pick_h,
+            success=True,
+            input_type=input_type,
+            raw_input=raw_input,
+        )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 路由注册
@@ -141,12 +158,14 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
                     llm: Optional[LLMIntentParser], speaker: Speaker,
                     listener: VoiceListener, gesture_recog: Optional[GestureRecognizer] = None,
                     memory: Optional["InteractionMemory"] = None,
-                    prompt_adapter: Optional["PromptAdapter"] = None):
+                    prompt_adapter: Optional["PromptAdapter"] = None,
+                    spatial: Optional["SpatialMemory"] = None):
     """注册所有 HTTP 路由和 SocketIO 事件.
 
     Args:
         memory: 自学习交互记忆库 (可选)
         prompt_adapter: LLM 提示词适配器 (可选)
+        spatial: 空间记忆库 (可选)
     """
 
     # ── 物体查找辅助函数 ───────────────────────────────────────────────────────
@@ -202,13 +221,22 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
         state.last_voice_text = text
         visible_colors, visible_objects = _get_visible_info()
 
+        # ── 空间记忆上下文 ──────────────────────────────────────────────
+        spatial_context = ""
+        if spatial is not None and not spatial.is_empty:
+            spatial_context = spatial.get_context_text()
+
         # 解析意图
         if llm:
-            intent = llm.parse(text, visible_colors)
+            # 注入空间记忆上下文
+            context_text = text
+            if spatial_context:
+                context_text = f"{spatial_context}\n用户说: {text}"
+            intent = llm.parse(context_text, visible_colors)
             if intent is None:
-                intent = LLMIntentParser.keyword_fallback(text, visible_colors)
+                intent = LLMIntentParser.keyword_fallback(text, visible_colors, spatial=spatial)
         else:
-            intent = LLMIntentParser.keyword_fallback(text, visible_colors)
+            intent = LLMIntentParser.keyword_fallback(text, visible_colors, spatial=spatial)
 
         state.add_log(f"🧠 意图: {json.dumps(intent, ensure_ascii=False)}")
 
@@ -252,7 +280,9 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
                     _pick_and_place(arm, target.x_mm, target.y_mm,
                                     llm=llm, color=target.color or color,
                                     class_name=target.class_name or class_name,
-                                    visible_colors=visible_colors)
+                                    visible_colors=visible_colors,
+                                    spatial=spatial,
+                                    input_type="text", raw_input=text)
                     state.arm_busy = False
                     state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
                     llm_speak(speaker, llm,
@@ -508,7 +538,9 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
             _pick_and_place(arm, target.x_mm, target.y_mm,
                             llm=llm, color=target.color or color,
                             class_name=target.class_name or class_name,
-                            visible_colors=[d.color for d in state.detections])
+                            visible_colors=[d.color for d in state.detections],
+                            spatial=spatial,
+                            input_type="text", raw_input=f"pick {color or class_name}")
             state.arm_busy = False
             state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
             llm_speak(speaker, llm,
@@ -575,6 +607,69 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
         state.add_log("🛑 紧急停止 — 已回零")
         llm_speak(speaker, llm, "机械臂已紧急停止，回到初始位置", "已停止，回零了")
         emit("state_update", state.get_state_dict())
+
+    # ── SocketIO: 空间记忆查询 ─────────────────────────────────────────────────
+    @socketio.on("spatial_memory")
+    def on_spatial_memory():
+        """返回空间记忆的完整状态."""
+        if spatial is None:
+            emit("spatial_memory_data", {"available": False, "message": "空间记忆未启用"})
+            return
+        data = {
+            "available": True,
+            "stats": spatial.stats(),
+            "context": spatial.get_context_text(recent_n=10),
+            "recent": [
+                {
+                    "time": r.time_str,
+                    "object": r.object_desc,
+                    "color": r.color,
+                    "class_name": r.class_name,
+                    "class_cn": r.class_cn,
+                    "pick": f"({r.pick_x:.0f},{r.pick_y:.0f})",
+                    "drop": f"({r.drop_x:.0f},{r.drop_y:.0f})",
+                    "input_type": r.input_type,
+                    "raw_input": r.raw_input[:50] if r.raw_input else "",
+                }
+                for r in spatial.recent_placements(10)
+            ],
+        }
+        emit("spatial_memory_data", data)
+        state.add_log("📋 空间记忆已查询")
+
+    # ── SocketIO: 清空空间记忆 ─────────────────────────────────────────────────
+    @socketio.on("clear_spatial_memory")
+    def on_clear_spatial_memory():
+        if spatial is not None:
+            spatial.clear()
+            state.add_log("🗑️ 空间记忆已清空")
+            llm_speak(speaker, llm, "空间记忆已清空", "记忆已清空")
+            emit("spatial_memory_data", {"available": True, "cleared": True})
+
+    # ── HTTP API: 空间记忆 ──────────────────────────────────────────────────────
+    @app.route("/api/spatial-memory")
+    def api_spatial_memory():
+        if spatial is None:
+            return jsonify({"available": False})
+        return jsonify({
+            "available": True,
+            "stats": spatial.stats(),
+            "recent": [
+                {
+                    "time": r.time_str,
+                    "object": r.object_desc,
+                    "color": r.color,
+                    "class_name": r.class_name,
+                    "class_cn": r.class_cn,
+                    "pick_x": round(r.pick_x, 1),
+                    "pick_y": round(r.pick_y, 1),
+                    "drop_x": round(r.drop_x, 1),
+                    "drop_y": round(r.drop_y, 1),
+                    "input_type": r.input_type,
+                }
+                for r in spatial.recent_placements(20)
+            ],
+        })
 
     # ── SocketIO: 开关手势识别 ─────────────────────────────────────────────────
     @socketio.on("toggle_gesture_recog")
