@@ -185,11 +185,21 @@ void loop() {
   if (now - lastStepTime >= STEP_INTERVAL_MS) {
     lastStepTime = now;
 
-    // FIX-6: Explicit bool flag instead of bitwise |= on bool values
-    bool moving = stepServo(servoBase,  currentBase,  targetBase);
-    moving      = stepServo(servoLeft,  currentLeft,  targetLeft)  || moving;
-    moving      = stepServo(servoRight, currentRight, targetRight) || moving;
-    moving      = stepServo(servoClaw,  currentClaw,  targetClaw)  || moving;
+    // FIX-7: Round-robin stepping — only one servo per interval (USB safe).
+    //         Cycles through base→left→right→claw so peak current stays
+    //         under ~750 mA instead of ~2.25 A with simultaneous stepping.
+    static uint8_t stepIndex = 0;
+    switch (stepIndex) {
+      case 0: stepServo(servoBase,  currentBase,  targetBase); break;
+      case 1: stepServo(servoLeft,  currentLeft,  targetLeft); break;
+      case 2: stepServo(servoRight, currentRight, targetRight); break;
+      case 3: stepServo(servoClaw,  currentClaw,  targetClaw); break;
+    }
+    stepIndex = (stepIndex + 1) % 4;
+
+    // Any servo still has distance to target?
+    bool moving = (currentBase != targetBase) || (currentLeft != targetLeft)
+               || (currentRight != targetRight) || (currentClaw != targetClaw);
 
     // FIX-4: Emit ACK:DONE exactly once when all joints reach their targets
     if (motionInProgress && !moving) {
