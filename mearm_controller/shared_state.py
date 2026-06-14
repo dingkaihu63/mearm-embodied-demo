@@ -83,6 +83,11 @@ class SharedState:
         # 语音识别最近文本 (供 learner 使用)
         self.last_voice_text: str = ""
 
+        # 动作完成后自动暂停 (防止过度识别和重复运动)
+        # True = 暂停等待用户按"继续", 语音/手势被阻塞
+        # False = 正常监听
+        self.action_paused: bool = True
+
     def update_joint(self, name: str, angle: int):
         with self._lock:
             lo, hi = JOINT_LIMITS.get(name, (0, 180))
@@ -140,6 +145,7 @@ class SharedState:
                 "hand_detected": self.hand_detected,
                 "hand_gesture": self.hand_gesture,
                 "gesture_recog_enabled": self.gesture_recog_enabled,
+                "action_paused": self.action_paused,
             }
 
     def get_logs(self) -> list[str]:

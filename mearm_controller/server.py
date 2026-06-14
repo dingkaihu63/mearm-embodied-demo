@@ -29,9 +29,11 @@ import cv2
 from flask_socketio import SocketIO
 
 from .config import (
-    SAFE_MODE, HAND_GESTURE_CN, COLOR_CN, GESTURES, HOME_ANGLES,
+    SAFE_MODE,
+
+    HAND_GESTURE_CN, COLOR_CN, GESTURES, HOME_ANGLES,
     SAFE_GESTURE_DELAY, GESTURE_PAUSE_AFTER_ACTION,
-    log,
+    LLM_SYSTEM_PROMPT, log,
 )
 from .shared_state import state
 from .arm_serial import ArmSerial
@@ -71,7 +73,7 @@ def vision_loop(vision: VisionPipeline, gesture_recog: Optional[GestureRecognize
         # 手势识别 (检查开关和暂停状态)
         if gesture_recog and state.gesture_recog_enabled:
             now = time.time()
-            if state.arm_busy or now < state.gesture_paused_until:
+            if state.arm_busy or state.action_paused or now < state.gesture_paused_until:
                 time.sleep(0.05)
                 continue
             with state._lock:
@@ -104,6 +106,38 @@ def broadcast_loop(socketio: SocketIO):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Arduino 状态轮询线程
+# ══════════════════════════════════════════════════════════════════════════════
+
+def status_poll_loop(arm: ArmSerial):
+    """每秒查询 Arduino 实际关节角度，同步到 shared state.
+
+    注意: arm_busy 时跳过, 避免与 wait_done() 抢串口响应.
+    """
+    log.info("Arduino 状态轮询线程已启动")
+    while True:
+        time.sleep(1.0)
+        if state.arm_busy:
+            continue
+        if not arm._ser or not arm._ser.is_open:
+            continue
+        try:
+            resp = arm.send("status", wait_ack=True)
+            if resp.startswith("STATUS:"):
+                # 格式: STATUS:base:X,left:Y,right:Z,claw:W
+                parts = resp.replace("STATUS:", "").split(",")
+                for part in parts:
+                    if ":" in part:
+                        joint, val = part.split(":")
+                        try:
+                            state.joint_angles[joint] = int(val)
+                        except ValueError:
+                            pass
+        except Exception:
+            pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 主入口
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -116,19 +150,19 @@ def main():
     parser.add_argument("--web-port", type=int, default=5000, help="Web 端口 (默认 5000)")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument("--ollama-url", default=None,
-                        help="Ollama API 地址 (默认 http://localhost:11434/v1)")
+                    help="Ollama API 地址 (默认 http://localhost:11434/v1)")
     parser.add_argument("--api-key", default=None,
-                        help="云端 LLM API Key (OpenAI 兼容, 如 DeepSeek)")
+                    help="云端 LLM API Key (OpenAI 兼容, 如 DeepSeek)")
     parser.add_argument("--api-base-url", default=None,
-                        help="云端 LLM API 地址 (默认 https://api.deepseek.com)")
+                    help="云端 LLM API 地址 (默认 https://api.deepseek.com)")
     parser.add_argument("--vision-api-key", default=None,
-                        help="云端多模态视觉 API Key (如 Moonshot/Kimi)")
+                    help="云端多模态视觉 API Key (如 Moonshot/Kimi)")
     parser.add_argument("--no-llm", action="store_true", help="仅关键词模式, 跳过 LLM")
     parser.add_argument("--no-voice", action="store_true", help="禁用语音识别")
     parser.add_argument("--unsafe", action="store_true", help="关闭安全模式 (需外接电源)")
     args = parser.parse_args()
 
-    global SAFE_MODE
+    # ── 安全模式 (必须在 ArmSerial 构造前设置, 因为 __init__ 读取此标志) ──
     if args.unsafe:
         SAFE_MODE = False
         state.add_log("⚡ 安全模式已关闭 — 需要外接电源!")
@@ -158,10 +192,15 @@ def main():
         cfg.LLM_API_BASE_URL = args.api_base_url
     if args.vision_api_key:
         cfg.VISION_API_KEY = args.vision_api_key
+    api_key = True  # LLMIntentParser auto-detects provider
 
     # ── 初始化子系统 ──────────────────────────────────────────────────────────
     arm = ArmSerial(args.port)
-    vision = VisionPipeline(cam_index=args.cam, ip_cam_url=args.ip_cam)
+    cam_arg = args.cam
+    if cam_arg == "auto":
+        cam_arg = _auto_detect_cam()
+        state.add_log(f"🔍 自动检测到摄像头索引 {cam_arg}")
+    vision = VisionPipeline(cam_index=int(cam_arg) if cam_arg != "auto" else 0, ip_cam_url=args.ip_cam)
 
     # 语音队列 (Vosk → 指令处理)
     voice_q: queue.Queue = queue.Queue()
@@ -188,13 +227,13 @@ def main():
     prompt_adapter = None
     if HAS_LEARNER:
         memory = InteractionMemory()
-        prompt_adapter = PromptAdapter(memory, base_prompt="")
+        prompt_adapter = PromptAdapter(memory, base_prompt=LLM_SYSTEM_PROMPT)
         state.add_log(f"🧠 自学习库已启用 (历史交互: {memory.count} 条)")
         # 如果已有足够数据，切换为增强 prompt
         if prompt_adapter:
             enhanced = prompt_adapter.get_augmented_prompt()
             if enhanced and llm:
-                llm._system_prompt = enhanced
+                llm.update_system_prompt(enhanced)
                 state.add_log("📈 LLM 提示词已根据历史学习增强")
 
     # 启动语音
@@ -220,6 +259,10 @@ def main():
     bcast_thread = threading.Thread(target=broadcast_loop, args=(socketio,), daemon=True)
     bcast_thread.start()
 
+    # 启动 Arduino 状态轮询
+    status_thread = threading.Thread(target=status_poll_loop, args=(arm,), daemon=True)
+    status_thread.start()
+
     # ── 手势事件处理循环 ──────────────────────────────────────────────────────
     def gesture_poll_loop():
         """从手势队列中取出事件，通过 LLM 解析为动作."""
@@ -232,6 +275,9 @@ def main():
             except Exception:
                 break
 
+            if state.action_paused:
+                continue
+
             with app.app_context():
                 # 将手势转为自然语言描述，交给 LLM 决策
                 gcn = HAND_GESTURE_CN.get(gesture_name, gesture_name)
@@ -241,27 +287,27 @@ def main():
                 # ── 空间记忆上下文 ──────────────────────────────────────
                 spatial_context = spatial.get_context_text() if not spatial.is_empty else ""
 
-                # ── 分层意图解析: 关键词(含空间记忆) → Ollama LLM ──
+                # ── 分层意图解析: 关键词(含空间记忆) → Kimi(视觉优先) → DeepSeek ──
                 intent = LLMIntentParser.keyword_fallback(
                     gesture_name, visible_colors, spatial=spatial)
 
                 if (intent is None or intent.get("confidence", 0) < 0.5) and llm:
-                    # 尝试带画面的多模态解析 (注入空间上下文)
                     frame = state.raw_frame
                     if frame is not None and llm._vision_model:
                         llm_intent = llm.parse_with_image(gesture_text, frame, visible_colors,
                                                           spatial_context=spatial_context)
-                        if llm_intent and llm_intent.get("confidence", 0) >= 0.5:
-                            intent = llm_intent
-                            state.add_log("🎯 Ollama 视觉解析生效 (手势)")
-                    else:
-                        context_text = gesture_text
-                        if spatial_context:
-                            context_text = f"{spatial_context}\n{gesture_text}"
-                        llm_intent = llm.parse(context_text, visible_colors)
-                        if llm_intent:
-                            intent = llm_intent
-                            state.add_log("🧠 Ollama 解析生效 (手势)")
+                    # else fall through to text-only below
+                    if llm_intent and llm_intent.get("confidence", 0) >= 0.5:
+                        intent = llm_intent
+                        state.add_log("🎯 视觉解析生效 (手势)")
+
+                if (intent is None or intent.get("confidence", 0) < 0.5) and llm:
+                    context_text = gesture_text
+                    if spatial_context:
+                        context_text = f"{spatial_context}\n{gesture_text}"
+                    llm_intent = llm.parse(context_text, visible_colors)
+                    if llm_intent:
+                        intent = llm_intent
 
                 if intent is None:
                     intent = {"action": "say", "color": None, "gesture": None,
@@ -277,6 +323,28 @@ def main():
                               message)
 
                 action = intent.get("action", "say")
+
+                # ── 忙态保护: arm_busy 时只允许 say/home ──
+                _BUSY_SAFE = {"say", "home"}
+                if state.arm_busy and action not in _BUSY_SAFE:
+                    state.add_log(f"⚠️ 机械臂正忙, 手势动作被拦截: {action}")
+                    state.gesture_paused_until = time.time() + 1.5
+                    socketio.emit("state_update", state.get_state_dict())
+                    socketio.emit("voice_reply",
+                                  {"text": "机械臂正忙，手势已忽略。", "intent": intent})
+                    # ── 仍记录交互 ──────────────────────────────────────
+                    if memory is not None:
+                        memory.add(Interaction(
+                            timestamp=time.time(),
+                            input_type="gesture",
+                            raw_input=gesture_name,
+                            visible_colors=visible_colors,
+                            llm_intent=intent,
+                            executed_action="blocked_busy",
+                            success=False,
+                        ))
+                        memory.auto_save()
+                    continue
 
                 if action == "pick_and_place":
                     color = intent.get("color")
@@ -301,6 +369,7 @@ def main():
                                             spatial=spatial,
                                             input_type="gesture", raw_input=gesture_name)
                             state.arm_busy = False
+                            state.action_paused = True
                             state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
                             llm_speak(speaker, llm,
                                       f"{ccn}物体抓取放置完成",
@@ -322,9 +391,11 @@ def main():
                             for step in seq:
                                 state.update_joints(step)
                                 arm.move(step)
+                                arm.wait_done(timeout=2.0)
                                 time.sleep(SAFE_GESTURE_DELAY if SAFE_MODE else 0.4)
                             state.arm_busy = False
                             state.current_gesture = ""
+                            state.action_paused = True
                             state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
                             socketio.emit("state_update", state.get_state_dict())
 
@@ -334,6 +405,7 @@ def main():
                     state.update_joints(dict(HOME_ANGLES))
                     state.arm_busy = False
                     state.current_gesture = ""
+                    state.action_paused = False
                     state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
                     arm.home()
                     state.add_log("🏠 手势触发回零")
@@ -369,6 +441,10 @@ def main():
                 continue
             except Exception:
                 break
+
+            if state.action_paused:
+                continue
+
             # 在 Flask 上下文中处理
             with app.app_context():
                 state.last_voice_text = text
@@ -377,32 +453,43 @@ def main():
                 # ── 空间记忆上下文 ──────────────────────────────────────
                 spatial_context = spatial.get_context_text() if not spatial.is_empty else ""
 
-                # ── 分层意图解析: 关键词(含空间记忆) → Ollama LLM ──
+                # ── 分层意图解析: 关键词(本地优先) → Kimi混合识别 → DeepSeek ──
+                # 本地关键词优先 — 毫秒级响应:
+                #   1. 关键词本地匹配 — 主解析层 (含空间记忆查询), 高置信度直接执行
+                #   2. Kimi 多模态 — 视觉+语音联合理解, 关键词未命中时兜底
+                #   3. DeepSeek 纯文本 — 最终兜底
                 intent = None
 
-                # 1. 关键词快速匹配 (含空间记忆查询)
+                # 1. 关键词优先 (本地毫秒级, 不经过网络)
                 intent = LLMIntentParser.keyword_fallback(text, visible_colors, spatial=spatial)
-                if intent and intent.get("confidence", 0) >= 0.5:
-                    state.add_log(f"📝 关键词匹配: '{text}' → {intent.get('action', '?')}")
+                if intent and intent.get("confidence", 0) >= 0.8:
+                    state.add_log(f"📝 关键词匹配: '{text}' → {intent.get('action', '?')} (本地)")
+                elif intent and intent.get("confidence", 0) >= 0.5:
+                    state.add_log(f"📝 关键词低置信度: '{text}' → {intent.get('action', '?')}, 尝试 API 增强")
+                else:
+                    intent = None  # 低于 0.5 不采纳
 
-                # 2. 低置信度时尝试 LLM 解析 (注入空间上下文)
+                # 2. Kimi 混合识别: 关键词未命中时, 用视觉+语音联合理解
                 if (intent is None or intent.get("confidence", 0) < 0.5) and llm:
-                    # 尝试带画面的多模态解析 (如果配置了视觉模型)
                     frame = state.raw_frame
                     if frame is not None and llm._vision_model:
                         llm_intent = llm.parse_with_image(text, frame, visible_colors,
                                                           spatial_context=spatial_context)
-                        if llm_intent and llm_intent.get("confidence", 0) >= 0.5:
-                            intent = llm_intent
-                            state.add_log(f"🎯 Ollama 视觉解析: '{text}' → {llm_intent.get('action', '?')}")
-                    else:
-                        context_text = text
-                        if spatial_context:
-                            context_text = f"{spatial_context}\n用户说: {text}"
-                        llm_intent = llm.parse(context_text, visible_colors)
-                        if llm_intent:
-                            intent = llm_intent
-                            state.add_log(f"🧠 Ollama 解析: '{text}' → {llm_intent.get('action', '?')}")
+                    # else fall through to text-only below
+
+                    if llm_intent and llm_intent.get("confidence", 0) >= 0.5:
+                        intent = llm_intent
+                        state.add_log(f"🎯 视觉解析: '{text}' → {kimi_intent.get('action', '?')}")
+
+                # 3. LLM 纯文本兜底
+                if (intent is None or intent.get("confidence", 0) < 0.5) and llm:
+                    context_text = text
+                    if spatial_context:
+                        context_text = f"{spatial_context}\n用户说: {text}"
+                    llm_intent = llm.parse(context_text, visible_colors)
+                    if llm_intent:
+                        intent = llm_intent
+                        state.add_log(f"🧠 LLM 解析: '{text}' → {llm_intent.get('action', '?')}")
 
                 if intent is None:
                     intent = {"action": "say", "color": None, "gesture": None,
@@ -418,6 +505,30 @@ def main():
                               message)
 
                 action = intent.get("action", "say")
+
+                # ── 忙态保护: arm_busy 时只允许 say/home ──
+                _BUSY_SAFE = {"say", "home"}
+                if state.arm_busy and action not in _BUSY_SAFE:
+                    state.add_log(f"⚠️ 机械臂正忙, 语音动作被拦截: {action}")
+                    llm_speak(speaker, llm,
+                              "机械臂正在执行上一个动作，请稍等一下",
+                              "我还在忙，请等一下再试")
+                    socketio.emit("state_update", state.get_state_dict())
+                    socketio.emit("voice_reply",
+                                  {"text": "机械臂正忙，请稍后再试。", "intent": intent})
+                    # ── 仍记录交互 (自学习) ──────────────────────────────
+                    if memory is not None:
+                        memory.add(Interaction(
+                            timestamp=time.time(),
+                            input_type="voice",
+                            raw_input=text,
+                            visible_colors=visible_colors,
+                            llm_intent=intent,
+                            executed_action="blocked_busy",
+                            success=False,
+                        ))
+                        memory.auto_save()
+                    continue
 
                 if action == "pick_and_place":
                     color = intent.get("color")
@@ -440,6 +551,7 @@ def main():
                                             spatial=spatial,
                                             input_type="voice", raw_input=text)
                             state.arm_busy = False
+                            state.action_paused = True
                             state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
                             llm_speak(speaker, llm,
                                       f"{ccn}物体抓取放置完成",
@@ -460,9 +572,11 @@ def main():
                             for step in seq:
                                 state.update_joints(step)
                                 arm.move(step)
+                                arm.wait_done(timeout=2.0)
                                 time.sleep(SAFE_GESTURE_DELAY if SAFE_MODE else 0.4)
                             state.arm_busy = False
                             state.current_gesture = ""
+                            state.action_paused = True
                             state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
                             socketio.emit("state_update", state.get_state_dict())
 
@@ -474,6 +588,7 @@ def main():
                     state.update_joint("claw", 90)
                     arm.move({"claw": 90})
                     state.arm_busy = False
+                    state.action_paused = True
                     state.add_log("🖐️ 语音: 张开夹爪")
 
                 elif action == "claw_close":
@@ -482,6 +597,7 @@ def main():
                     state.update_joint("claw", 0)
                     arm.move({"claw": 0})
                     state.arm_busy = False
+                    state.action_paused = True
                     state.add_log("🖐️ 语音: 闭合夹爪")
 
                 elif action == "move_joint":
@@ -503,6 +619,7 @@ def main():
                         state.update_joint(j, new_angle)
                         arm.move({j: new_angle})
                     state.arm_busy = False
+                    state.action_paused = True
                     jcn = {"base": "底座", "lift": "手臂", "elbow": "肘部"}.get(joint_name, joint_name)
                     dir_cn = "↑" if direction > 0 else "↓"
                     state.add_log(f"🔧 语音关节运动: {jcn} {dir_cn}")
@@ -511,6 +628,7 @@ def main():
                     state.update_joints(dict(HOME_ANGLES))
                     state.arm_busy = False
                     state.current_gesture = ""
+                    state.action_paused = False
                     state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
                     arm.home()
                     state.add_log("🏠 语音回零")
@@ -534,7 +652,8 @@ def main():
                     if prompt_adapter and llm:
                         enhanced = prompt_adapter.get_augmented_prompt()
                         if enhanced and enhanced != llm._system_prompt:
-                            llm._system_prompt = enhanced
+                        llm._system_prompt = enhanced
+                        if True:
                             state.add_log("📈 LLM 提示词已增强 (基于学习)")
 
     voice_thread = threading.Thread(target=voice_poll_loop, daemon=True)

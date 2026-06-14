@@ -19,6 +19,7 @@ import numpy as np
 from flask import Flask, Response, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 
+
 from .config import (
     JOINT_LIMITS, HOME_ANGLES, GESTURES, COLOR_CN, JOINT_CN, GESTURE_CN,
     HAND_GESTURE_CN, FRAME_WIDTH, FRAME_HEIGHT, JPEG_QUALITY,
@@ -101,7 +102,7 @@ def _pick_and_place(arm: ArmSerial, x_mm: float, y_mm: float,
         if angles:
             state.update_joints(angles)
             arm.move(angles)
-            time.sleep(move_delay)
+            arm.wait_done(timeout=3.0)  # 等待 Arduino 步进完成
         else:
             log.warning(f"_move 失败: 无法到达 ({x:.0f},{y:.0f},{z:.0f})")
 
@@ -126,13 +127,13 @@ def _pick_and_place(arm: ArmSerial, x_mm: float, y_mm: float,
 
     # ── 抓取序列 ───────────────────────────────────────────────────────────
     _move(x_mm, y_mm, carry_h)
-    arm.move({"claw": JOINT_LIMITS["claw"][1]}); time.sleep(claw_delay)  # 张开
+    arm.move({"claw": JOINT_LIMITS["claw"][1]}); arm.wait_done(timeout=1.0); time.sleep(claw_delay)  # 张开
     _move(x_mm, y_mm, pick_h)
-    arm.move({"claw": JOINT_LIMITS["claw"][0]}); time.sleep(claw_delay)  # 闭合
+    arm.move({"claw": JOINT_LIMITS["claw"][0]}); arm.wait_done(timeout=1.0); time.sleep(claw_delay)  # 闭合
     _move(x_mm, y_mm, carry_h)
     _move(drop_x, drop_y, carry_h)
     _move(drop_x, drop_y, pick_h)
-    arm.move({"claw": JOINT_LIMITS["claw"][1]}); time.sleep(claw_delay)  # 张开
+    arm.move({"claw": JOINT_LIMITS["claw"][1]}); arm.wait_done(timeout=1.0); time.sleep(claw_delay)  # 张开
     arm.home()
     state.update_joints(dict(HOME_ANGLES))
     state.add_log("✅ 抓取放置完成")
@@ -218,6 +219,10 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
     # ── 文本/语音指令处理管道 ─────────────────────────────────────────────────
     def process_command(text: str):
         """完整指令管道: 文本 → LLM/关键词 → 意图 → 执行 → 语音回复"""
+        if state.action_paused:
+            state.add_log(f"⏸️ 暂停中, 指令被忽略: '{text}'")
+            emit("error", {"msg": "请先点击「继续」按钮"})
+            return
         state.last_voice_text = text
         visible_colors, visible_objects = _get_visible_info()
 
@@ -249,6 +254,30 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
                       message)
 
         action = intent.get("action", "say")
+
+        # ── 忙态保护: arm_busy 时只允许 say/home ──
+        _BUSY_SAFE = {"say", "home"}
+        if state.arm_busy and action not in _BUSY_SAFE:
+            state.add_log(f"⚠️ 机械臂正忙, 指令被拦截: {action}")
+            state.gesture_paused_until = time.time() + 1.5
+            llm_speak(speaker, llm,
+                      "机械臂正在执行上一个动作，请稍等一下",
+                      "我还在忙，等一下再试")
+            emit("state_update", state.get_state_dict())
+            emit("voice_reply", {"text": "机械臂正忙，请稍后再试。", "intent": intent})
+            # ── 仍记录交互 ──────────────────────────────────────────────
+            if memory is not None and HAS_LEARNER:
+                memory.add(Interaction(
+                    timestamp=time.time(),
+                    input_type="text",
+                    raw_input=text,
+                    visible_colors=visible_colors,
+                    llm_intent=intent,
+                    executed_action="blocked_busy",
+                    success=False,
+                ))
+                memory.auto_save()
+            return
 
         if action == "pick_and_place":
             color = intent.get("color") or ""
@@ -284,6 +313,7 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
                                     spatial=spatial,
                                     input_type="text", raw_input=text)
                     state.arm_busy = False
+                    state.action_paused = True
                     state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
                     llm_speak(speaker, llm,
                               f"{label_cn}物体抓取放置完成",
@@ -308,6 +338,7 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
                         time.sleep(SAFE_GESTURE_DELAY if SAFE_MODE else 0.4)
                     state.arm_busy = False
                     state.current_gesture = ""
+                    state.action_paused = True
                     state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
                     socketio.emit("state_update", state.get_state_dict())
 
@@ -336,8 +367,7 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
             # 积累足够数据后增强 LLM
             if prompt_adapter and llm:
                 enhanced = prompt_adapter.get_augmented_prompt()
-                if enhanced and enhanced != llm._system_prompt:
-                    llm._system_prompt = enhanced
+                if llm.update_system_prompt(enhanced):
                     state.add_log("📈 LLM 提示词已增强 (基于学习)")
 
     # ── 主页 ──────────────────────────────────────────────────────────────────
@@ -422,6 +452,14 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
                 if color != "red2"
             })
 
+    # ── SocketIO: 继续 (解除暂停) ──────────────────────────────────────────────
+    @socketio.on("resume_action")
+    def on_resume_action():
+        state.action_paused = False
+        state.add_log("▶ 用户点击继续 — 等待指令")
+        llm_speak(speaker, llm, "请说出指令", "请说出指令")
+        emit("state_update", state.get_state_dict())
+
     # ── SocketIO: 客户端连接 ──────────────────────────────────────────────────
     @socketio.on("connect")
     def on_connect():
@@ -434,31 +472,48 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
     # ── SocketIO: 手动移动关节 ────────────────────────────────────────────────
     @socketio.on("move_joint")
     def on_move_joint(data: dict):
+        if state.arm_busy:
+            emit("error", {"msg": "机械臂正忙，请稍后再试。"})
+            return
+        if state.action_paused:
+            emit("error", {"msg": "请先点击「继续」按钮"})
+            return
         joint = data.get("joint", "")
         angle = data.get("angle", 90)
         state.update_joint(joint, angle)
         arm.move({joint: int(angle)})
+        state.action_paused = True
         jcn = JOINT_CN.get(joint, joint)
         llm_speak(speaker, llm,
                   f"{jcn}关节移动到了{int(angle)}度",
                   f"{jcn}已调到{int(angle)}度")
+        emit("state_update", state.get_state_dict())
 
     # ── SocketIO: 全部关节移动 ────────────────────────────────────────────────
     @socketio.on("move_all")
     def on_move_all(data: dict):
+        if state.arm_busy:
+            emit("error", {"msg": "机械臂正忙，请稍后再试。"})
+            return
+        if state.action_paused:
+            emit("error", {"msg": "请先点击「继续」按钮"})
+            return
         angles = data.get("angles", {})
         state.update_joints(angles)
         arm.move({k: int(v) for k, v in angles.items()})
+        state.action_paused = True
         parts = [f"{JOINT_CN.get(k, k)}{int(v)}度" for k, v in angles.items()]
         desc = "所有关节已更新: " + ", ".join(parts)
         llm_speak(speaker, llm, desc, desc)
+        emit("state_update", state.get_state_dict())
 
-    # ── SocketIO: 回零 ────────────────────────────────────────────────────────
+    # ── SocketIO: 回零 (始终允许, 不受暂停限制) ──────────────────────────────
     @socketio.on("home")
     def on_home():
         state.update_joints(dict(HOME_ANGLES))
         state.arm_busy = False
         state.current_gesture = ""
+        state.action_paused = False
         state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
         arm.home()
         state.add_log("🏠 机械臂回零")
@@ -468,24 +523,46 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
     # ── SocketIO: 张开夹爪 ────────────────────────────────────────────────────
     @socketio.on("claw_open")
     def on_claw_open():
+        if state.arm_busy:
+            emit("error", {"msg": "机械臂正忙，请稍后再试。"})
+            return
+        if state.action_paused:
+            emit("error", {"msg": "请先点击「继续」按钮"})
+            return
         max_open = JOINT_LIMITS["claw"][1]
         state.update_joint("claw", max_open)
         arm.move({"claw": max_open})
+        state.action_paused = True
         state.add_log("🖐 夹爪张开")
         llm_speak(speaker, llm, "夹爪已张开", "夹爪已张开")
+        emit("state_update", state.get_state_dict())
 
     # ── SocketIO: 闭合夹爪 ────────────────────────────────────────────────────
     @socketio.on("claw_close")
     def on_claw_close():
+        if state.arm_busy:
+            emit("error", {"msg": "机械臂正忙，请稍后再试。"})
+            return
+        if state.action_paused:
+            emit("error", {"msg": "请先点击「继续」按钮"})
+            return
         min_close = JOINT_LIMITS["claw"][0]
         state.update_joint("claw", min_close)
         arm.move({"claw": min_close})
+        state.action_paused = True
         state.add_log("✊ 夹爪闭合")
         llm_speak(speaker, llm, "夹爪已闭合", "夹爪已闭合")
+        emit("state_update", state.get_state_dict())
 
     # ── SocketIO: 执行手势 ────────────────────────────────────────────────────
     @socketio.on("gesture")
     def on_gesture(data: dict):
+        if state.arm_busy:
+            emit("error", {"msg": "机械臂正忙，请稍后再试。"})
+            return
+        if state.action_paused:
+            emit("error", {"msg": "请先点击「继续」按钮"})
+            return
         name = data.get("name", "wave")
         seq = GESTURES.get(name)
         if not seq:
@@ -502,9 +579,11 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
             for step in seq:
                 state.update_joints(step)
                 arm.move(step)
+                arm.wait_done(timeout=2.0)
                 time.sleep(delay)
             state.arm_busy = False
             state.current_gesture = ""
+            state.action_paused = True
             state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
             llm_speak(speaker, llm, f"{gcn}手势执行完成", f"{gcn}手势完成")
             socketio.emit("state_update", state.get_state_dict())
@@ -515,6 +594,12 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
     # ── SocketIO: 抓取颜色物体 ────────────────────────────────────────────────
     @socketio.on("pick_color")
     def on_pick_color(data: dict):
+        if state.arm_busy:
+            emit("error", {"msg": "机械臂正忙，请稍后再试。"})
+            return
+        if state.action_paused:
+            emit("error", {"msg": "请先点击「继续」按钮"})
+            return
         color = data.get("color", "")
         class_name = data.get("class_name", "")
         target, label_cn = _find_target(color=color, class_name=class_name)
@@ -542,6 +627,7 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
                             spatial=spatial,
                             input_type="text", raw_input=f"pick {color or class_name}")
             state.arm_busy = False
+            state.action_paused = True
             state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
             llm_speak(speaker, llm,
                       f"{label_cn}抓取放置完成",
@@ -597,11 +683,12 @@ def register_routes(app: Flask, socketio: SocketIO, arm: ArmSerial,
     def on_voice_status():
         emit("voice_status", {"listening": listener._running if listener else False})
 
-    # ── SocketIO: 紧急停止运动 ─────────────────────────────────────────────────
+    # ── SocketIO: 紧急停止运动 (始终允许, 不受暂停限制) ──────────────────────
     @socketio.on("stop_motion")
     def on_stop_motion():
         state.arm_busy = False
         state.current_gesture = ""
+        state.action_paused = False
         state.update_joints(dict(HOME_ANGLES))
         arm.home()
         state.add_log("🛑 紧急停止 — 已回零")

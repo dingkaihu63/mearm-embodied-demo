@@ -32,13 +32,13 @@ log = logging.getLogger("workbench")
 # ══════════════════════════════════════════════════════════════════════════════
 
 FALLBACK_PROMPT = """\
-你是 MeArm 机械臂的运动规划专家。机械臂参数:
-- 底座高度 H=55mm (肩关节距台面)
-- 摄像头在底座上方 240mm 处, 水平朝前拍摄 (非俯拍)
-  画面中: 上方=远处, 下方=近处/台面, 物体 y 坐标越大越远
-- 等效连杆总长 L1+L2=150mm (最大水平/垂直伸展约 145mm)
-- 关节限位: base 30-150°, left 30-150°, right 30-150°, claw 10-73°
-- 底座旋转中心在原点, Y 轴正方向为前方
+你是 MeArm 机械臂的运动规划专家。机械臂采用解耦平行四边形结构:
+
+- Left 舵机 → Y 轴 (前后伸缩): left=150 收缩, left=30 完全伸出 (最大{ymax:.0f}mm)
+- Right 舵机 → Z 轴 (上下升降): right=30 最低({zmin:.0f}mm), right=150 最高({zmax:.0f}mm)
+- 底座 base=90 为正前方, base=30/150 为左右极限
+- 摄像头在底座上方 240mm, 水平朝前拍摄
+  画面中: 上方=远处, 下方=近处/台面
 
 用户想要到达一个目标坐标，但解析 IK 发现目标超出范围。
 请推理出最接近的可达替代坐标 (closest_x, closest_y, closest_z)，
@@ -55,23 +55,20 @@ FALLBACK_PROMPT = """\
 PICK_PLAN_PROMPT = """\
 你是 MeArm 机械臂的运动规划专家。你需要规划一个"抓取-放置"动作序列。
 
+机械臂采用解耦平行四边形结构:
+- Left 舵机 → Y 轴 (前后伸缩), Right 舵机 → Z 轴 (上下升降)
+- 最大前伸 ~130mm, 高度范围 20-150mm
+- 夹爪需从上方垂直接近 (approach_height 建议比物体高 30-50mm)
+- 抓取高度 (pick_height) 建议 15-25mm
+- 搬运高度 (carry_height) 建议 70-100mm
+- 放置位置 (drop_x, drop_y) 建议在机械臂前方 (0, 80-120) 范围内
+- 摄像头 640x480, 在底座上方 240mm 水平朝前
+  画面中上方像素=远处物体, 下方像素=近处/台面
+
 目标物体: {color}
 世界坐标: ({x:.0f}, {y:.0f}, {z:.0f}) mm
 可见物体: {visible_colors}
 当前关节: base={base}°, left={left}°, right={right}°
-
-机械臂参数与约束:
-- 底座高度 55mm, 摄像头在底座上方 240mm, 水平朝前拍摄
-  画面中上方像素=远处物体, 下方像素=近处/台面
-- 物体 (x,y) 坐标由水平画面经单应性变换得到, z 需估算
-- 等效连杆 L1+L2=150mm, 最大水平伸展 ~145mm
-- 夹爪需从上方垂直接近 (approach_height 建议 30-80mm 高于物体)
-- 抓取高度 (pick_height) 建议 15-25mm (小物体高度)
-- 搬运高度 (carry_height) 建议 70-100mm
-- 放置位置 (drop_x, drop_y) 建议在机械臂前方 (0, 80-130) 范围内
-- 如果物体太远(>130mm)，建议"先推近再抓取"
-- 如果物体在底座附近(<30mm)，建议用指尖拨动
-- 摄像头分辨率 640x480, 水平朝向
 
 请规划最优动作序列，仅输出 JSON:
 {{
@@ -88,17 +85,23 @@ CALIBRATION_PROMPT = """\
 你是 MeArm 机械臂的标定专家。根据以下实际执行记录，
 分析定位偏差模式，建议运动学参数修正。
 
+机械臂采用解耦平行四边形 IK:
+- Left 舵机 → Y 轴: left = 150 - r*120/Y_MAX
+- Right 舵机 → Z 轴: right = 30 + (z-Z_MIN)*120/(Z_MAX-Z_MIN)
+
 实际执行记录 (目标坐标 → 关节角度):
 {records}
 
-当前运动学参数:
-- L1=L2=75mm, H=55mm
-- ELBOW_OFFSET=0 (肘部偏置角)
+当前标定参数:
+- Y_MAX = {ymax:.0f}mm (left=30 时的最大前伸)
+- Z_MIN = {zmin:.0f}mm (right=30 时的最低高度)
+- Z_MAX = {zmax:.0f}mm (right=150 时的最高高度)
 
 请分析偏差模式并输出修正建议，仅输出 JSON:
 {{
-  "elbow_offset_adjust": 0.0,
-  "base_offset_adjust": 0.0,
+  "y_max_adjust": 0.0,
+  "z_min_adjust": 0.0,
+  "z_max_adjust": 0.0,
   "confidence": 0.0,
   "notes": "分析说明"
 }}
@@ -186,11 +189,14 @@ class IKLLMEnhancer:
             base=joints.get("base", 90),
             left=joints.get("left", 90),
             right=joints.get("right", 90),
+            ymax=ArmIK.Y_MAX,
+            zmin=ArmIK.Z_MIN,
+            zmax=ArmIK.Z_MAX,
         )
 
         try:
             fallback = llm._client.chat.completions.create(
-                model=getattr(llm, '_model', 'qwen2.5:7b'),
+                model="deepseek-v4-flash",
                 max_tokens=200,
                 timeout=8.0,
                 messages=[
@@ -267,7 +273,7 @@ class IKLLMEnhancer:
 
         try:
             resp = llm._client.chat.completions.create(
-                model=getattr(llm, '_model', 'qwen2.5:7b'),
+                model="deepseek-v4-flash",
                 max_tokens=256,
                 timeout=8.0,
                 messages=[
@@ -320,11 +326,16 @@ class IKLLMEnhancer:
                 f"right={joints.get('right','?')}°"
             )
 
-        prompt = CALIBRATION_PROMPT.format(records="\n".join(lines))
+        prompt = CALIBRATION_PROMPT.format(
+            records="\n".join(lines),
+            ymax=ArmIK.Y_MAX,
+            zmin=ArmIK.Z_MIN,
+            zmax=ArmIK.Z_MAX,
+        )
 
         try:
             resp = llm._client.chat.completions.create(
-                model=getattr(llm, '_model', 'qwen2.5:7b'),
+                model="deepseek-v4-flash",
                 max_tokens=200,
                 timeout=8.0,
                 messages=[
@@ -336,14 +347,16 @@ class IKLLMEnhancer:
             raw = resp.choices[0].message.content.strip()
             calib = json.loads(raw)
 
-            elbow_adj = calib.get("elbow_offset_adjust", 0.0)
-            base_adj = calib.get("base_offset_adjust", 0.0)
+            y_adj = calib.get("y_max_adjust", 0.0)
+            zmin_adj = calib.get("z_min_adjust", 0.0)
+            zmax_adj = calib.get("z_max_adjust", 0.0)
             confidence = calib.get("confidence", 0.0)
 
             if confidence > 0.5:
                 log.info(
-                    f"LLM 标定建议: elbow_offset={elbow_adj:.1f}°, "
-                    f"base_offset={base_adj:.1f}° (置信度={confidence:.1%})"
+                    f"LLM 标定建议: Y_MAX_adj={y_adj:.1f}mm, "
+                    f"Z_MIN_adj={zmin_adj:.1f}mm, Z_MAX_adj={zmax_adj:.1f}mm "
+                    f"(置信度={confidence:.1%})"
                 )
             else:
                 log.info(f"LLM 标定: 置信度过低 ({confidence:.1%}), 跳过自动修正")
@@ -356,19 +369,32 @@ class IKLLMEnhancer:
 
     @staticmethod
     def apply_calibration(calib_result: dict):
-        """将标定结果应用到 ArmIK 参数."""
+        """将标定结果应用到 ArmIK 解耦参数 (Y_MAX, Z_MIN, Z_MAX)."""
         if not calib_result:
             return
 
-        elbow_adj = calib_result.get("elbow_offset_adjust", 0.0)
-        base_adj = calib_result.get("base_offset_adjust", 0.0)
+        y_adj = calib_result.get("y_max_adjust", 0.0)
+        zmin_adj = calib_result.get("z_min_adjust", 0.0)
+        zmax_adj = calib_result.get("z_max_adjust", 0.0)
         confidence = calib_result.get("confidence", 0.0)
 
         if confidence < 0.5:
             return
 
-        if abs(elbow_adj) > 0.5:
-            old = ArmIK.ELBOW_OFFSET
-            ArmIK.ELBOW_OFFSET += elbow_adj
-            ArmIK.ELBOW_OFFSET = round(ArmIK.ELBOW_OFFSET, 1)
-            log.info(f"标定已应用: ELBOW_OFFSET {old} → {ArmIK.ELBOW_OFFSET}")
+        if abs(y_adj) > 0.5:
+            old = ArmIK.Y_MAX
+            ArmIK.Y_MAX += y_adj
+            ArmIK.Y_MAX = round(ArmIK.Y_MAX, 1)
+            log.info(f"标定已应用: Y_MAX {old} → {ArmIK.Y_MAX}mm")
+
+        if abs(zmin_adj) > 0.5:
+            old = ArmIK.Z_MIN
+            ArmIK.Z_MIN += zmin_adj
+            ArmIK.Z_MIN = round(ArmIK.Z_MIN, 1)
+            log.info(f"标定已应用: Z_MIN {old} → {ArmIK.Z_MIN}mm")
+
+        if abs(zmax_adj) > 0.5:
+            old = ArmIK.Z_MAX
+            ArmIK.Z_MAX += zmax_adj
+            ArmIK.Z_MAX = round(ArmIK.Z_MAX, 1)
+            log.info(f"标定已应用: Z_MAX {old} → {ArmIK.Z_MAX}mm")
