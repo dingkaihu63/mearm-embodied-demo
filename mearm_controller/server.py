@@ -652,8 +652,7 @@ def main():
                     if prompt_adapter and llm:
                         enhanced = prompt_adapter.get_augmented_prompt()
                         if enhanced and enhanced != llm._system_prompt:
-                        llm._system_prompt = enhanced
-                        if True:
+                            llm._system_prompt = enhanced
                             state.add_log("📈 LLM 提示词已增强 (基于学习)")
 
     voice_thread = threading.Thread(target=voice_poll_loop, daemon=True)
