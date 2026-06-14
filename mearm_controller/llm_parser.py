@@ -23,6 +23,7 @@ from .config import (
 )
 from .shared_state import state
 from .speaker import Speaker
+from .keyword_library import get_library
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -471,17 +472,28 @@ class LLMIntentParser:
         """结构化关键词匹配.
 
         优先级:
-        0. 空间记忆引用 (spatial memory lookup, 如果 spatial 可用)
-        1. 颜色 + 抓取动词 → pick_and_place
-        2. 结构化规则表 (KEYWORD_RULES, 按定义顺序)
-        3. 部分关键词匹配 (回零, 停止等)
-        4. 未知 → 返回低置信度, 交给上层 LLM
+        0. JSON 关键词库 (KeywordLibrary, 热加载, 主规则源)
+        1. 空间记忆引用 (spatial memory lookup, 如果 spatial 可用)
+        2. 颜色 + 抓取动词 → pick_and_place
+        3. 结构化规则表 (KEYWORD_RULES, 硬编码降级)
+        4. 部分关键词匹配 (回零, 停止等)
+        5. 未知 → 返回低置信度, 交给上层 LLM
 
         Args:
             text: 用户输入文本
             visible_colors: 摄像头可见颜色列表
             spatial: 可选的空间记忆库 (SpatialMemory)
         """
+        # ── 优先尝试 JSON 关键词库 (热加载, 用户可编辑) ──────────────────
+        try:
+            lib = get_library()
+            if lib.is_loaded:
+                result = lib.match(text, visible_colors, spatial=spatial)
+                if result is not None:
+                    return result
+        except Exception:
+            pass  # JSON 库异常时静默降级到硬编码规则
+
         t = text.lower()
 
         # ── A. 颜色 + 抓取动词 (最高优先级, 精确匹配) ──────────────────

@@ -1,0 +1,337 @@
+{
+  "version": "1.0",
+  "description": "MeArm 本地关键词库 — 热加载，无需重启。编辑后 5 秒内自动生效。",
+  "categories": {
+    "control": "控制指令",
+    "social": "社交问候",
+    "gesture": "手势触发",
+    "motion": "关节运动",
+    "claw": "夹爪控制",
+    "query": "状态查询",
+    "confirm": "确认/否定",
+    "spatial": "空间指示",
+    "help": "帮助"
+  },
+
+  "color_map": {
+    "红": "red", "红色": "red", "红的": "red", "red": "red",
+    "绿": "green", "绿色": "green", "绿的": "green", "green": "green",
+    "蓝": "blue", "蓝色": "blue", "蓝的": "blue", "blue": "blue",
+    "黄": "yellow", "黄色": "yellow", "黄的": "yellow", "yellow": "yellow",
+    "白": "white", "白色": "white", "white": "white",
+    "黑": "black", "黑色": "black", "black": "black",
+    "紫": "purple", "紫色": "purple",
+    "橙": "orange", "橙色": "orange",
+    "粉": "pink", "粉色": "pink"
+  },
+
+  "pick_verbs": [
+    "抓", "捡", "拿", "取", "pick", "grab", "get", "take",
+    "搬运", "移动", "搬", "夹取", "抓取", "拾取", "捡起"
+  ],
+
+  "rules": [
+    {
+      "id": "stop",
+      "category": "control",
+      "keywords": ["停止", "暂停", "停", "停下", "别动", "stop", "halt", "住手"],
+      "action": "say",
+      "message": "好的，已停止。",
+      "confidence": 1.0
+    },
+    {
+      "id": "home",
+      "category": "control",
+      "keywords": ["回零", "归位", "复位", "初始位置", "回家", "回去", "home", "reset", "恢复", "归零", "回到原点", "回原位"],
+      "action": "home",
+      "message": "收到，正在回到初始位置。",
+      "confidence": 1.0
+    },
+
+    {
+      "id": "claw_open",
+      "category": "claw",
+      "keywords": ["张开", "打开", "松手", "放手", "松开", "open", "张开夹爪", "松爪"],
+      "action": "claw_open",
+      "message": "好的，张开夹爪。",
+      "confidence": 0.95
+    },
+    {
+      "id": "claw_close",
+      "category": "claw",
+      "keywords": ["闭合", "抓住", "抓紧", "夹紧", "握住", "握紧", "合上", "close", "grip", "闭合夹爪", "夹住", "抓一下"],
+      "action": "claw_close",
+      "message": "好的，夹爪已闭合。",
+      "confidence": 0.95
+    },
+
+    {
+      "id": "greeting",
+      "category": "social",
+      "keywords": ["你好", "您好", "嗨", "hello", "hi", "嘿", "哈喽", "在吗", "在不在", "早上好", "晚上好", "下午好", "早啊", "好久不见", "来了"],
+      "action": "gesture",
+      "gesture": "greet",
+      "message": "你好呀，我是机械臂小助手，有什么可以帮你的？",
+      "confidence": 0.95
+    },
+    {
+      "id": "thanks",
+      "category": "social",
+      "keywords": ["谢谢", "感谢", "多谢", "thanks", "thank", "辛苦了", "麻烦你了", "谢了"],
+      "action": "say",
+      "message": "不客气，随时为你服务~",
+      "confidence": 0.95
+    },
+    {
+      "id": "bye",
+      "category": "social",
+      "keywords": ["再见", "拜拜", "bye", "回头见", "走了", "下次见", "晚安", "拜"],
+      "action": "gesture",
+      "gesture": "wave",
+      "message": "再见，下次见~",
+      "confidence": 0.95
+    },
+    {
+      "id": "self_intro",
+      "category": "social",
+      "keywords": ["你叫什么", "你是谁", "你的名字", "自我介绍", "介绍一下自己", "你是什么"],
+      "action": "say",
+      "message": "我是 MeArm 桌面机械臂，叫我小臂就好~",
+      "confidence": 0.95
+    },
+    {
+      "id": "how_are_you",
+      "category": "social",
+      "keywords": ["你怎么样", "你好吗", "how are you", "状态怎么样"],
+      "action": "say",
+      "message": "我很好，随时待命！",
+      "confidence": 0.9
+    },
+
+    {
+      "id": "wave",
+      "category": "gesture",
+      "keywords": ["挥手", "wave", "摇手", "摇摆", "摆摆手"],
+      "action": "gesture",
+      "gesture": "wave",
+      "message": "收到，挥手~",
+      "confidence": 0.9
+    },
+    {
+      "id": "nod",
+      "category": "gesture",
+      "keywords": ["点头", "nod", "鞠躬", "点点头"],
+      "action": "gesture",
+      "gesture": "nod",
+      "message": "好的，点头~",
+      "confidence": 0.9
+    },
+    {
+      "id": "point_left",
+      "category": "gesture",
+      "keywords": ["指左边", "指左", "指向左边", "向左指", "左边", "point left"],
+      "action": "gesture",
+      "gesture": "point_left",
+      "message": "好的，指向左边。",
+      "confidence": 0.9
+    },
+    {
+      "id": "point_right",
+      "category": "gesture",
+      "keywords": ["指右边", "指右", "指向右边", "向右指", "右边", "point right"],
+      "action": "gesture",
+      "gesture": "point_right",
+      "message": "好的，指向右边。",
+      "confidence": 0.9
+    },
+    {
+      "id": "point",
+      "category": "gesture",
+      "keywords": ["指前面", "指前", "指向前面", "向前指", "前面", "指向", "指着", "point", "那边", "那个方向", "指点"],
+      "action": "gesture",
+      "gesture": "point",
+      "message": "好的，指向那边~",
+      "confidence": 0.9
+    },
+    {
+      "id": "greet_gesture",
+      "category": "gesture",
+      "keywords": ["问候", "greet", "打招呼", "问好"],
+      "action": "gesture",
+      "gesture": "greet",
+      "message": "你好呀~",
+      "confidence": 0.9
+    },
+    {
+      "id": "thumbs_up",
+      "category": "gesture",
+      "keywords": ["点赞", "棒", "thumbs up", "厉害", "牛", "赞"],
+      "action": "gesture",
+      "gesture": "greet",
+      "message": "谢谢夸奖~",
+      "confidence": 0.85
+    },
+    {
+      "id": "peace",
+      "category": "gesture",
+      "keywords": ["耶", "peace", "剪刀手", "胜利"],
+      "action": "gesture",
+      "gesture": "wave",
+      "message": "耶~",
+      "confidence": 0.85
+    },
+
+    {
+      "id": "base_left",
+      "category": "motion",
+      "keywords": ["左转", "转左", "向左转", "逆时针", "turn left", "转到左边", "往左"],
+      "action": "move_joint",
+      "joint": "base",
+      "direction": -1,
+      "message": "好的，向左转。",
+      "confidence": 0.9
+    },
+    {
+      "id": "base_right",
+      "category": "motion",
+      "keywords": ["右转", "转右", "向右转", "顺时针", "turn right", "转到右边", "往右"],
+      "action": "move_joint",
+      "joint": "base",
+      "direction": 1,
+      "message": "好的，向右转。",
+      "confidence": 0.9
+    },
+    {
+      "id": "lift_up",
+      "category": "motion",
+      "keywords": ["抬臂", "举高", "抬高", "抬起来", "raise", "往上抬", "举起来", "升高", "高一点", "再高点"],
+      "action": "move_joint",
+      "joint": "lift",
+      "direction": 1,
+      "message": "好的，抬高手臂。",
+      "confidence": 0.9
+    },
+    {
+      "id": "lift_down",
+      "category": "motion",
+      "keywords": ["放低", "降低", "放下来", "lower", "往下放", "低一点", "再低点", "降下来", "放下手臂"],
+      "action": "move_joint",
+      "joint": "lift",
+      "direction": -1,
+      "message": "好的，放低手臂。",
+      "confidence": 0.9
+    },
+    {
+      "id": "elbow_extend",
+      "category": "motion",
+      "keywords": ["前伸", "伸出去", "往前伸", "extend", "伸长", "伸出去点", "往前", "伸远点", "够过去"],
+      "action": "move_joint",
+      "joint": "elbow",
+      "direction": 1,
+      "message": "好的，向前伸展。",
+      "confidence": 0.9
+    },
+    {
+      "id": "elbow_retract",
+      "category": "motion",
+      "keywords": ["后缩", "收回来", "往后缩", "retract", "缩回来", "收回去", "往后", "缩一点", "收一下", "收回", "收缩"],
+      "action": "move_joint",
+      "joint": "elbow",
+      "direction": -1,
+      "message": "好的，收缩回来。",
+      "confidence": 0.9
+    },
+
+    {
+      "id": "faster",
+      "category": "motion",
+      "keywords": ["快点", "加速", "快一点", "faster", "速度快点", "迅速"],
+      "action": "say",
+      "message": "好的，加快速度。",
+      "confidence": 0.85
+    },
+    {
+      "id": "slower",
+      "category": "motion",
+      "keywords": ["慢点", "减速", "慢一点", "slower", "速度慢点", "慢些"],
+      "action": "say",
+      "message": "好的，放慢速度。",
+      "confidence": 0.85
+    },
+
+    {
+      "id": "status",
+      "category": "query",
+      "keywords": ["状态", "status", "怎么样", "在哪里", "什么位置", "当前位置", "报告状态"],
+      "action": "say",
+      "message": "机械臂各关节正常，随时待命。",
+      "confidence": 0.9
+    },
+    {
+      "id": "what_see",
+      "category": "query",
+      "keywords": ["看到什么", "有什么", "检测到什么", "能看到", "识别", "看到没"],
+      "action": "say",
+      "message": "让我看看摄像头画面...",
+      "confidence": 0.8
+    },
+
+    {
+      "id": "confirm_yes",
+      "category": "confirm",
+      "keywords": ["是的", "好的", "行", "可以", "没问题", "yes", "ok", "okay", "好呀", "好啊", "确认", "没错", "对的对的", "对的", "嗯嗯", "好嘞"],
+      "action": "say",
+      "message": "好的，收到！",
+      "confidence": 0.9
+    },
+    {
+      "id": "confirm_no",
+      "category": "confirm",
+      "keywords": ["不要", "别了", "算了", "取消", "no", "cancel", "不对", "不是", "不用了", "没事", "别这样", "不做了", "放弃"],
+      "action": "say",
+      "message": "好的，已取消。",
+      "confidence": 0.9
+    },
+
+    {
+      "id": "here",
+      "category": "spatial",
+      "keywords": ["这里", "这儿", "here", "这个位置"],
+      "action": "say",
+      "message": "看到这里了。",
+      "confidence": 0.75
+    },
+    {
+      "id": "there",
+      "category": "spatial",
+      "keywords": ["那里", "那儿", "那边", "there", "那个位置"],
+      "action": "say",
+      "message": "看到那边了。",
+      "confidence": 0.75
+    },
+
+    {
+      "id": "help",
+      "category": "help",
+      "keywords": ["帮助", "help", "怎么用", "有什么功能", "能做什么", "你会什么", "你的功能", "使用说明"],
+      "action": "say",
+      "message": "我可以语音控制抓取物体、做手势、回零。试试说'你好'或'抓红色'~",
+      "confidence": 0.9
+    },
+
+    {
+      "id": "spatial_last_placed",
+      "category": "spatial",
+      "keywords": ["刚才放的", "刚刚放的", "上次放的", "刚放的那个", "刚才那个", "刚刚那个", "上次那个", "上一个", "刚放的东西", "刚刚放的东西", "刚才放的东西"],
+      "action": "_spatial_lookup_last_placed",
+      "message": "让我回想一下刚刚放了什么...",
+      "confidence": 1.0
+    }
+  ],
+
+  "spatial_take_back_keywords": [
+    "拿回来", "取回来", "拿回去", "拿过来", "取过来",
+    "放回去", "放回来", "拣回来", "捡回来",
+    "拿回", "取回", "带回", "搬回"
+  ]
+}
