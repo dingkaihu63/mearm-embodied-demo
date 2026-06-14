@@ -86,7 +86,7 @@ class SharedState:
         # 动作完成后自动暂停 (防止过度识别和重复运动)
         # True = 暂停等待用户按"继续", 语音/手势被阻塞
         # False = 正常监听
-        self.action_paused: bool = True
+        self.action_paused: bool = False  # 启动时不暂停，动作完成后才暂停
 
     def update_joint(self, name: str, angle: int):
         with self._lock:
