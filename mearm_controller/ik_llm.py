@@ -34,9 +34,9 @@ log = logging.getLogger("workbench")
 FALLBACK_PROMPT = """\
 你是 MeArm 机械臂的运动规划专家。机械臂采用解耦平行四边形结构:
 
-- Left 舵机 → Y 轴 (前后伸缩): left=150 收缩, left=30 完全伸出 (最大{ymax:.0f}mm)
-- Right 舵机 → Z 轴 (上下升降): right=30 最低({zmin:.0f}mm), right=150 最高({zmax:.0f}mm)
-- 底座 base=90 为正前方, base=30/150 为左右极限
+- Left 舵机 → Y 轴 (前后伸缩): left=0 收缩(最高), left=180 完全伸出(最低, 最大{ymax:.0f}mm)
+- Right 舵机 → Z 轴 (上下升降): right=180 最低({zmin:.0f}mm), right=0 最高({zmax:.0f}mm)
+- 底座 base=90 为正前方, base=0/180 为左右极限
 - 摄像头在底座上方 240mm, 水平朝前拍摄
   画面中: 上方=远处, 下方=近处/台面
 
@@ -86,16 +86,16 @@ CALIBRATION_PROMPT = """\
 分析定位偏差模式，建议运动学参数修正。
 
 机械臂采用解耦平行四边形 IK:
-- Left 舵机 → Y 轴: left = 150 - r*120/Y_MAX
-- Right 舵机 → Z 轴: right = 30 + (z-Z_MIN)*120/(Z_MAX-Z_MIN)
+- Left 舵机 → Y 轴: left = r*180/Y_MAX (角度越大越往前伸)
+- Right 舵机 → Z 轴: right = 180 - (z-Z_MIN)*180/(Z_MAX-Z_MIN) (角度越大越往下降)
 
 实际执行记录 (目标坐标 → 关节角度):
 {records}
 
 当前标定参数:
-- Y_MAX = {ymax:.0f}mm (left=30 时的最大前伸)
-- Z_MIN = {zmin:.0f}mm (right=30 时的最低高度)
-- Z_MAX = {zmax:.0f}mm (right=150 时的最高高度)
+- Y_MAX = {ymax:.0f}mm (left=180 时的最大前伸)
+- Z_MIN = {zmin:.0f}mm (right=180 时的最低高度)
+- Z_MAX = {zmax:.0f}mm (right=0 时的最高高度)
 
 请分析偏差模式并输出修正建议，仅输出 JSON:
 {{

@@ -15,7 +15,6 @@
  *
  * 编译: Arduino IDE 打开此文件, 选择 Uno 板, 编译上传
  */
-
 #include <Arduino.h>
 #include <Servo.h>
 
@@ -26,8 +25,8 @@ const uint8_t PIN_RIGHT =  9;   // #3 Right Servo  — 右侧俯仰
 const uint8_t PIN_CLAW  =  6;   // #4 Claw Servo   — 夹爪开合
 
 // ─── 机械限位 (度) ─────────────────────────────
-const uint8_t MIN_ANGLE = 30;
-const uint8_t MAX_ANGLE = 150;
+const uint8_t MIN_ANGLE = 0;
+const uint8_t MAX_ANGLE = 180;
 const uint8_t MIN_CLAW  = 0;
 const uint8_t MAX_CLAW  = 90;
 
@@ -37,9 +36,9 @@ const uint16_t STEP_INTERVAL_MS = 15;
 // ─── 全局对象与变量 ────────────────────────────
 Servo servoBase, servoLeft, servoRight, servoClaw;
 
-// 起始位置: 底座逆时针90°侧, 左右臂向上90°, 夹爪全开
-int targetBase  = 30,  targetLeft  = 150, targetRight  = 150, targetClaw = 90;
-int currentBase = 30,  currentLeft = 150, currentRight = 150, currentClaw = 90;
+// 起始位置: 全关节 HOME=90°(用户视角0°), ±90°对称, 夹爪 HOME=25°(半开)
+int targetBase  = 90, targetLeft  = 90, targetRight  = 90, targetClaw = 25;
+int currentBase = 90, currentLeft = 90, currentRight = 90, currentClaw = 25;
 
 #define BUF_SIZE 128
 char    serialBuf[BUF_SIZE];
@@ -66,6 +65,21 @@ bool stepServo(Servo &servo, int &current, int target) {
   return false;
 }
 
+// ─── 夹爪专用步进 (方向反转 + 行程放大) ─
+// 夹爪命令 0-90° 映射到物理舵机 180-0° (行程放大 2 倍, 方向反转)
+//   cmd=0  → physical=180° → 夹爪完全闭合
+//   cmd=45 → physical= 90° → 夹爪半开
+//   cmd=90 → physical=  0° → 夹爪完全张开
+int clawPhysical(int cmdAngle) {
+  return 180 - 2 * cmdAngle;
+}
+
+bool stepServoClaw(Servo &servo, int &current, int target) {
+  if (current < target) { current++; servo.write(clawPhysical(current)); return true; }
+  if (current > target) { current--; servo.write(clawPhysical(current)); return true; }
+  return false;
+}
+
 // ─── 辅助函数：立即移动 (用于初始化) ───────────
 void moveServosImmediate(int b, int l, int r, int c) {
   currentBase = targetBase = b;
@@ -76,7 +90,7 @@ void moveServosImmediate(int b, int l, int r, int c) {
   servoBase.write(b);
   servoLeft.write(l);
   servoRight.write(r);
-  servoClaw.write(c);
+  servoClaw.write(clawPhysical(c));
 }
 
 //
@@ -99,7 +113,7 @@ void parseCommand(char *cmd) {
 
   // Built-in commands
   if (strcasecmp(cmd, "home") == 0) {
-    targetBase = 30; targetLeft = 150; targetRight = 150; targetClaw = 90;
+    targetBase = 90; targetLeft = 90; targetRight = 90; targetClaw = 25;
     motionInProgress = true;
     Serial.println(F("ACK:HOME"));
     return;
@@ -157,7 +171,7 @@ void setup() {
   servoRight.attach(PIN_RIGHT);
   servoClaw.attach(PIN_CLAW);
 
-  moveServosImmediate(30, 150, 150, 90);
+  moveServosImmediate(90, 90, 90, 25);
   Serial.println(F("READY"));
 }
 
@@ -193,7 +207,7 @@ void loop() {
       case 0: stepServo(servoBase,  currentBase,  targetBase); break;
       case 1: stepServo(servoLeft,  currentLeft,  targetLeft); break;
       case 2: stepServo(servoRight, currentRight, targetRight); break;
-      case 3: stepServo(servoClaw,  currentClaw,  targetClaw); break;
+      case 3: stepServoClaw(servoClaw, currentClaw, targetClaw); break;
     }
     stepIndex = (stepIndex + 1) % 4;
 

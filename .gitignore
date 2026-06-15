@@ -14,6 +14,7 @@ build/
 models/vosk-model-small-cn/
 models/vosk-model-small-en-us-0.15/
 models/hand_landmarker.task
+yolov8s.pt
 vosk-model-*.zip
 
 # 用户数据

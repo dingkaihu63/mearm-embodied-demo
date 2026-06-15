@@ -32,13 +32,13 @@ BAUD_RATE = 115_200
 SERIAL_TIMEOUT = 2.0
 
 JOINT_LIMITS = {
-    "base": (30, 150),
-    "left": (30, 150),
-    "right": (30, 150),
+    "base": (0, 180),
+    "left": (0, 180),
+    "right": (0, 180),
     "claw": (0, 90),
 }
-# 起始位置: 底座30°, 左右臂向上90°, 夹爪全开
-HOME_ANGLES = {"base": 30, "left": 150, "right": 150, "claw": 90}
+# 起始位置: 底座/左右臂 HOME=90°(用户0°), ±90°对称, 夹爪 HOME=25°(半开, 适配调零程序)
+HOME_ANGLES = {"base": 90, "left": 90, "right": 90, "claw": 25}
 
 HSV_RANGES: dict[str, tuple] = {
     "red": ((0, 120, 70), (10, 255, 255)),
@@ -63,37 +63,37 @@ CAMERA_OFFSET_X_MM = 0.0   # 摄像头相对于底座中心的 X 偏移
 CAMERA_OFFSET_Y_MM = 0.0   # 摄像头相对于底座中心的 Y 偏移
 CAMERA_DIRECTION = "horizontal"  # 水平朝前 (非俯拍)
 
-# 手势序列 (HOME base=30°)
+# 手势序列 (所有关节 HOME=90°为用户0°, ±90°对称)
 # 指向类手势只有1步, 停留在目标位置不自动回零
 GESTURES: dict[str, list[dict]] = {
-    "wave": [          # 大幅左右摇摆
-        {"base": 30, "left": 150, "right": 150, "claw": 90},
-        {"base": 120, "left": 150, "right": 150, "claw": 90},
-        {"base": 30, "left": 150, "right": 150, "claw": 90},
-        {"base": 120, "left": 150, "right": 150, "claw": 90},
-        {"base": 30, "left": 150, "right": 150, "claw": 90},
+    "wave": [          # 左右摇摆 (base 90↔0)
+        {"base": 90, "left": 90, "right": 90, "claw": 25},
+        {"base": 0, "left": 90, "right": 90, "claw": 25},
+        {"base": 90, "left": 90, "right": 90, "claw": 25},
+        {"base": 0, "left": 90, "right": 90, "claw": 25},
+        {"base": 90, "left": 90, "right": 90, "claw": 25},
     ],
-    "point": [         # 指向前方 (base居中, 手臂下放, 爪半合)
-        {"base": 90, "left": 120, "right": 120, "claw": 45},
+    "point": [         # 指向前方
+        {"base": 90, "left": 90, "right": 90, "claw": 45},
     ],
-    "point_left": [    # 指向左边
-        {"base": 150, "left": 120, "right": 120, "claw": 45},
+    "point_left": [    # 指向左边 (CCW 90°)
+        {"base": 0, "left": 90, "right": 90, "claw": 45},
     ],
-    "point_right": [   # 指向右边
-        {"base": 30, "left": 120, "right": 120, "claw": 45},
+    "point_right": [   # 指向右边 (CW 90°)
+        {"base": 180, "left": 90, "right": 90, "claw": 45},
     ],
     "nod": [
-        {"base": 150, "left": 130, "right": 130, "claw": 90},
-        {"base": 150, "left": 150, "right": 150, "claw": 90},
-        {"base": 150, "left": 130, "right": 130, "claw": 90},
-        {"base": 150, "left": 150, "right": 150, "claw": 90},
+        {"base": 90, "left": 70, "right": 70, "claw": 25},
+        {"base": 90, "left": 90, "right": 90, "claw": 25},
+        {"base": 90, "left": 70, "right": 70, "claw": 25},
+        {"base": 90, "left": 90, "right": 90, "claw": 25},
     ],
     "greet": [         # 大弧度问候
-        {"base": 30, "left": 150, "right": 150, "claw": 90},
-        {"base": 100, "left": 130, "right": 130, "claw": 90},
-        {"base": 30, "left": 150, "right": 150, "claw": 90},
-        {"base": 100, "left": 130, "right": 130, "claw": 90},
-        {"base": 30, "left": 150, "right": 150, "claw": 90},
+        {"base": 90, "left": 90, "right": 90, "claw": 25},
+        {"base": 0, "left": 70, "right": 70, "claw": 25},
+        {"base": 90, "left": 90, "right": 90, "claw": 25},
+        {"base": 0, "left": 70, "right": 70, "claw": 25},
+        {"base": 90, "left": 90, "right": 90, "claw": 25},
     ],
 }
 
@@ -105,33 +105,6 @@ COLOR_CN = {"red": "红色", "green": "绿色", "blue": "蓝色", "yellow": "黄
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 JPEG_QUALITY = 60  # MJPEG 压缩质量 (降低以提高帧率)
-
-# ─── 云端 LLM API (OpenAI 兼容, 可选) ───────────────────────────────────
-# 设置 LLM_API_KEY 后自动使用云端 API；未设置则回退到本地 Ollama
-# 支持 DeepSeek, OpenAI, 或其他 OpenAI 兼容 API
-LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-LLM_API_BASE_URL = os.getenv("LLM_API_BASE_URL", "https://api.deepseek.com")
-LLM_API_MODEL = os.getenv("LLM_API_MODEL", "deepseek-chat")
-
-# ─── 云端多模态视觉 API (OpenAI 兼容, 可选) ─────────────────────────────
-# 设置后用于摄像头画面理解 (图片+文本联合推理)
-# 支持 Kimi/Moonshot, GPT-4V, 或其他 OpenAI 兼容多模态 API
-VISION_API_KEY = os.getenv("VISION_API_KEY", "")
-VISION_API_BASE_URL = os.getenv("VISION_API_BASE_URL", "https://api.moonshot.cn/v1")
-VISION_API_MODEL = os.getenv("VISION_API_MODEL", "kimi-k2.6")
-# 视觉模型 temperature (Kimi 等模型要求 temperature=1)
-VISION_API_TEMPERATURE = float(os.getenv("VISION_API_TEMPERATURE", "1.0"))
-
-# ─── Ollama (本地 LLM) ────────────────────────────────────────────────────
-# 安装 Ollama: https://ollama.com
-# 拉取模型: ollama pull qwen2.5:7b
-# 可选视觉模型: ollama pull llava  (用于多模态画面理解)
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
-# 视觉模型 (空字符串表示不启用多模态)
-OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "")
-LLM_TIMEOUT = 15.0
-LLM_MAX_TOKENS = 512
 
 # ─── 安全模式 ─────────────────────────────────────────────────────────────────
 SAFE_MODE = True          # 默认开启安全模式
@@ -225,7 +198,7 @@ JSON 格式:
 - 【绝对不要输出 json 以外的任何文字】"""
 
 # ─── YOLO 物体检测 ─────────────────────────────────────────────────────────────
-YOLO_MODEL = "yolov8s.pt"         # ultralytics 自动下载, 也可用 yolov8n.pt (更快)
+YOLO_MODEL = "models/yolov8s.pt" # ultralytics 自动下载, 也可用 yolov8n.pt (更快)
 YOLO_CONFIDENCE_THRESHOLD = 0.5    # 最低置信度
 YOLO_DEVICE = "cuda:0"            # RTX 5060, 回退 "cpu"
 YOLO_ENABLED = True               # 总开关
@@ -260,7 +233,7 @@ YOLO_CN_CLASS: dict[str, str] = {v: k for k, v in YOLO_CLASS_CN.items()}
 
 # ─── 云端 LLM API (OpenAI 兼容, 可选) ───────────────────────────────────
 # 设置 LLM_API_KEY 后自动使用云端 API；未设置则回退到本地 Ollama
-# 支持 DeepSeek, OpenAI, 或其他 OpenAI 兼容 API
+# 支持 DeepSeek, Kimi, OpenAI, 或其他 OpenAI 兼容 API
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_API_BASE_URL = os.getenv("LLM_API_BASE_URL", "https://api.deepseek.com")
 LLM_API_MODEL = os.getenv("LLM_API_MODEL", "deepseek-chat")
@@ -274,13 +247,11 @@ VISION_API_MODEL = os.getenv("VISION_API_MODEL", "kimi-k2.6")
 # 视觉模型 temperature (Kimi 等模型要求 temperature=1)
 VISION_API_TEMPERATURE = float(os.getenv("VISION_API_TEMPERATURE", "1.0"))
 
-# ─── Ollama (本地 LLM) ────────────────────────────────────────────────────
-# 安装 Ollama: https://ollama.com
-# 拉取模型: ollama pull qwen2.5:7b
-# 可选视觉模型: ollama pull llava  (用于多模态画面理解)
+# ─── Ollama (本地 LLM, 默认方案) ───────────────────────────────────────
+# 安装: https://ollama.com
+# 拉取: ollama pull qwen2.5:7b  (文本) ; ollama pull llava (视觉, 可选)
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
-# 视觉模型 (空字符串表示不启用多模态)
 OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "")
 LLM_TIMEOUT = 15.0
 LLM_MAX_TOKENS = 512
