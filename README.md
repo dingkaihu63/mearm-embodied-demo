@@ -492,7 +492,7 @@ Python ── TX (115200bps) ──▶ Arduino
 Arduino ── RX ────────────▶ Python
        READY
        ACK:MOVE → ACK:DONE
-       STATUS:base:85,left:90,right:92,claw:50
+       STATUS:base:90,left:90,right:90,claw:25
        ERR:SYNTAX / ERR:BUF_OVERFLOW
 ```
 
@@ -534,6 +534,7 @@ mearm-embodied-demo/
 ├── memory/                    # 💾 交互记忆 (运行时生成)
 │
 ├── main.ino                   # 🔌 Arduino 固件
+├── servo_zero.ino             # 🔧 舵机调零程序 (组装校准用)
 ├── workbench_server.py        # 🚀 入口脚本
 ├── servo_test.py              # 🔧 舵机校准工具
 ├── run_workbench.bat          # 🪟 Windows 启动
@@ -590,7 +591,7 @@ mearm-embodied-demo/
 | 🎯 YOLO 不工作 | 缺 torch/ultralytics | `pip install torch ultralytics` |
 | 🎤 语音无反应 | 麦克风未接 | 检查录音设备 |
 | 🤖 LLM 不响应 | Ollama 未启动 | `ollama serve` |
-| ⏱️ 舵机抖动 | 角度超限 | 控制在 30-150° |
+| ⏱️ 舵机抖动 | 角度超限 | 控制在 0-180° (claw 0-90°) |
 | 🔴 ERR:SYNTAX | 固件不匹配 | 重新烧录 `main.ino` |
 | 🟡 识别不到物体 | 光线/HSV 偏差 | Web UI → HSV 弹窗调参 |
 | 🟠 手势误触发 | 光照变化 | 调整摄像头角度 |
