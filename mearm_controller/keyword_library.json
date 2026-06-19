@@ -92,6 +92,14 @@
       "confidence": 0.95
     },
     {
+      "id": "handshake",
+      "category": "social",
+      "keywords": ["握手", "握个手", "握握手", "handshake", "握一下", "握握手吧", "来握手", "握个爪"],
+      "action": "handshake",
+      "message": "好的，握个手！",
+      "confidence": 0.95
+    },
+    {
       "id": "self_intro",
       "category": "social",
       "keywords": ["你叫什么", "你是谁", "你的名字", "自我介绍", "介绍一下自己", "你是什么"],

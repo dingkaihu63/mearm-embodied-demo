@@ -95,6 +95,10 @@ GESTURES: dict[str, list[dict]] = {
         {"base": 0, "left": 70, "right": 70, "claw": 25},
         {"base": 90, "left": 90, "right": 90, "claw": 25},
     ],
+    # handshake 只包含收尾帧, 实际延伸角度由 server.py 中 IK 动态计算
+    "handshake": [
+        {"base": 90, "left": 90, "right": 90, "claw": 25},
+    ],
 }
 
 # 中英文名称映射 (用于语音播报)
@@ -161,6 +165,13 @@ VOICE_DEDUP_WINDOW = 2.0
 # 英文模型固定置信度 (小模型不返回 confidence 时使用)
 # 设为低于 VOICE_MIN_CONFIDENCE_EN，避免空白英文结果抢走中文识别
 VOICE_EN_DEFAULT_CONFIDENCE = 0.30
+
+# ─── 人脸检测 & 性别识别 ─────────────────────────────────────────────────────
+# Haar Cascade 自带, 无需下载; 性别模型需下载到 models/
+#   gender_deploy.prototxt + gender_net.caffemodel
+FACE_DETECTION_ENABLED = True     # 人脸检测总开关
+FACE_FRAME_INTERVAL = 5           # 每 N 帧检测一次人脸 (节省 CPU)
+FACE_LOST_THRESHOLD = 15          # 连续 N 帧未检测到才清除状态
 
 # ─── 语音播报 ─────────────────────────────────────────────────────────────────
 # Edge-TTS 中文语音选项 (按自然度排序)

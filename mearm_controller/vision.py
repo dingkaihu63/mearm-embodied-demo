@@ -6,6 +6,7 @@ MeArm 工作台 — 视觉管线 (VisionPipeline)
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 from collections import deque
@@ -18,8 +19,7 @@ from .config import (
     HSV_RANGES, MIN_CONTOUR_AREA, CALIB_POINTS,
     FRAME_WIDTH, FRAME_HEIGHT,
     YOLO_ENABLED, YOLO_FRAME_INTERVAL, YOLO_CONFIDENCE_THRESHOLD,
-    YOLO_CLASS_CN,
-    API_VISION_ENABLED, log,
+    YOLO_CLASS_CN, FACE_DETECTION_ENABLED, FACE_FRAME_INTERVAL, log,
 )
 from .shared_state import state, Detection
 from .vision_yolo import YOLODetector
@@ -73,6 +73,28 @@ class VisionPipeline:
         self._api_detector = None  # 由 server.py 通过 set_api_detector() 注入
         self._api_frame_count = 0
         self._api_cached: list[Detection] = []
+
+        # ── HSV 资源缓存 (避免每帧重建 kernel/np.array) ──────────────────
+        self._hsv_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        self._hsv_lo_cache: dict[str, np.ndarray] = {}
+        self._hsv_hi_cache: dict[str, np.ndarray] = {}
+
+        # ── 人脸检测 & 性别识别 ──────────────────────────────────────────
+        self._face_detector = None
+        self._face_frame_count = 0
+        if FACE_DETECTION_ENABLED:
+            try:
+                from .face_detector import FaceDetector
+                self._face_detector = FaceDetector()
+                if self._face_detector.is_available:
+                    state.add_log("👤 人脸检测已集成到视觉管线")
+            except Exception as e:
+                state.add_log(f"⚠️ 人脸检测加载失败: {e}")
+
+        # ── 检测结果时序平滑 (减少抖动) ──────────────────────────────────
+        # 保留最近 3 帧检测, 用位置加权平均稳定中心点
+        self._det_history: deque = deque(maxlen=3)
+        self._det_match_dist = 40  # 匹配距离阈值 (像素)
 
     def set_api_detector(self, detector):
         """注入 API 检测器 (由 server.py 在 LLM 就绪后调用)."""
@@ -172,6 +194,14 @@ class VisionPipeline:
         out = cv2.perspectiveTransform(pt, self._H_mat)
         return float(out[0][0][0]), float(out[0][0][1])
 
+    def _get_hsv_arrays(self, color_name: str, lo: tuple, hi: tuple) -> tuple[np.ndarray, np.ndarray]:
+        """获取缓存的 HSV lo/hi numpy 数组, 仅在范围变化时重建."""
+        key = f"{color_name}_{lo}_{hi}"
+        if key not in self._hsv_lo_cache:
+            self._hsv_lo_cache[key] = np.array(lo)
+            self._hsv_hi_cache[key] = np.array(hi)
+        return self._hsv_lo_cache[key], self._hsv_hi_cache[key]
+
     def detect_colors(self, frame: np.ndarray) -> list[Detection]:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         results: list[Detection] = []
@@ -179,15 +209,18 @@ class VisionPipeline:
         with state._lock:
             ranges = dict(state.hsv_ranges)
 
+        kernel = self._hsv_kernel
+
         for color_name, (lo, hi) in ranges.items():
             if color_name == "red2":
                 continue
-            mask = cv2.inRange(hsv, np.array(lo), np.array(hi))
+            lo_arr, hi_arr = self._get_hsv_arrays(color_name, lo, hi)
+            mask = cv2.inRange(hsv, lo_arr, hi_arr)
             if color_name == "red":
                 lo2, hi2 = ranges.get("red2", ((170, 120, 70), (180, 255, 255)))
-                mask |= cv2.inRange(hsv, np.array(lo2), np.array(hi2))
+                lo2_arr, hi2_arr = self._get_hsv_arrays("red2", lo2, hi2)
+                mask |= cv2.inRange(hsv, lo2_arr, hi2_arr)
 
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
@@ -212,9 +245,14 @@ class VisionPipeline:
         return list(best.values())
 
     def detect_objects(self, frame: np.ndarray) -> list[Detection]:
-        """合并 YOLO + HSV + API 检测结果.
+        """合并 YOLO + HSV 检测结果 + 时序平滑.
 
-        优先级: YOLO (本地) > HSV (颜色) > API (云端回退)
+        策略:
+        1. YOLO 检测通用物体 (每 YOLO_FRAME_INTERVAL 帧跑一次)
+        2. HSV 检测彩色物体 (每帧都跑)
+        3. 去重: 如果 YOLO 和 HSV 检测到同一位置, 合并为一条 (source="merged")
+        4. 时序平滑: 与历史帧匹配, 加权平均中心点减少抖动
+        5. 返回合并后的 Detection 列表
         """
         # ── YOLO 检测 (帧间隔) ─────────────────────────────────────────────
         yolo_dets: list[Detection] = []
@@ -223,6 +261,7 @@ class VisionPipeline:
             self._yolo_frame_count += 1
             if self._yolo_frame_count % YOLO_FRAME_INTERVAL == 1:
                 yolo_dets = self._yolo.detect(frame)
+                # 填充世界坐标
                 for d in yolo_dets:
                     d.x_mm, d.y_mm = self.pixel_to_mm(d.cx, d.cy)
                 self._yolo_cached = yolo_dets
@@ -232,24 +271,74 @@ class VisionPipeline:
         # ── HSV 检测 ───────────────────────────────────────────────────────
         hsv_dets = self.detect_colors(frame)
 
-        # ── API 视觉回退 (YOLO不可用且HSV检测少时启用) ──────────────────
-        api_dets: list[Detection] = []
-        if not yolo_ok and self._api_detector and self._api_detector.is_available:
-            self._api_frame_count += 1
-            if self._api_frame_count % 15 == 1:  # 每15帧调一次API
-                api_dets = self._api_detector.detect(frame)
-                for d in api_dets:
-                    d.x_mm, d.y_mm = self.pixel_to_mm(d.cx, d.cy)
-                self._api_cached = api_dets
-            else:
-                api_dets = self._api_cached
-
         # ── 合并去重 ───────────────────────────────────────────────────────
         merged = self._merge_detections(yolo_dets, hsv_dets)
-        # 只有 YOLO 没结果时才附加 API 检测 (避免重复)
-        if not yolo_dets and api_dets:
-            merged = api_dets + merged
-        return merged
+
+        # ── 时序平滑: 减少检测中心抖动 ───────────────────────────────────
+        smoothed = self._temporal_smooth(merged)
+        return smoothed
+
+    def _temporal_smooth(self, current: list[Detection]) -> list[Detection]:
+        """时序平滑: 用最近几帧的检测结果加权平均中心点, 减少抖动.
+
+        匹配规则: 同颜色/同类名的检测在 _det_match_dist 像素内视为同一物体.
+        权重: 当前帧 0.6, 历史帧 0.4 (越新权重越高).
+        """
+        if not current:
+            self._det_history.append([])
+            return current
+
+        # 当前帧加入历史
+        self._det_history.append(list(current))
+
+        # 如果只有 1 帧历史, 无法平滑
+        if len(self._det_history) < 2:
+            return current
+
+        history = list(self._det_history)
+        result: list[Detection] = []
+
+        for d in current:
+            # 在历史帧中找匹配
+            matched_cx = [d.cx]
+            matched_cy = [d.cy]
+            for past_frame in history[:-1]:
+                best_match = None
+                best_dist = self._det_match_dist
+                for pd in past_frame:
+                    # 同颜色或同类名才匹配
+                    same_id = (d.color and pd.color == d.color) or \
+                              (d.class_name and pd.class_name == d.class_name)
+                    if not same_id:
+                        continue
+                    dist = math.hypot(d.cx - pd.cx, d.cy - pd.cy)
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_match = pd
+                if best_match:
+                    matched_cx.append(best_match.cx)
+                    matched_cy.append(best_match.cy)
+
+            # 加权平均: 当前帧权重 0.6, 历史帧平分 0.4
+            if len(matched_cx) > 1:
+                n_hist = len(matched_cx) - 1
+                hist_weight = 0.4 / n_hist
+                cur_weight = 0.6
+                total_w = cur_weight + hist_weight * n_hist
+                smooth_cx = int((d.cx * cur_weight + sum(x * hist_weight for x in matched_cx[1:])) / total_w)
+                smooth_cy = int((d.cy * cur_weight + sum(y * hist_weight for y in matched_cy[1:])) / total_w)
+                # 更新世界坐标
+                x_mm, y_mm = self.pixel_to_mm(smooth_cx, smooth_cy)
+                result.append(Detection(
+                    color=d.color, cx=smooth_cx, cy=smooth_cy, area=d.area,
+                    x_mm=x_mm, y_mm=y_mm,
+                    class_name=d.class_name, class_cn=d.class_cn,
+                    confidence=d.confidence, source=d.source, bbox=d.bbox,
+                ))
+            else:
+                result.append(d)
+
+        return result
 
     @staticmethod
     def _merge_detections(
@@ -265,8 +354,6 @@ class VisionPipeline:
         - 不重叠的各自保留
         - YOLO 排前面 (通常更重要)
         """
-        import math
-
         result: list[Detection] = []
         used_hsv: set[int] = set()
 
@@ -276,9 +363,9 @@ class VisionPipeline:
                 if i in used_hsv:
                     continue
                 # 检查中心距离
-                dist = math.sqrt((yd.cx - hd.cx) ** 2 + (yd.cy - hd.cy) ** 2)
+                dist = math.hypot(yd.cx - hd.cx, yd.cy - hd.cy)
                 # 使用 HSV 检测的直径作为参考
-                hsv_radius = math.sqrt(hd.area / 3.14159) if hd.area > 0 else 15
+                hsv_radius = math.sqrt(hd.area / math.pi) if hd.area > 0 else 15
                 if dist < hsv_radius * 1.5 or dist < 25:
                     # 合并: YOLO 的类别 + HSV 的颜色
                     yd.color = hd.color
@@ -394,7 +481,17 @@ class VisionPipeline:
             state.vision_fps = 1.0 / (sum(self._fps_counter) / len(self._fps_counter))
 
         dets = self.detect_objects(frame)
+
+        # ── 人脸检测 (帧间隔, 节省 CPU) ────────────────────────────────
+        if self._face_detector and self._face_detector.is_available:
+            self._face_frame_count += 1
+            if self._face_frame_count % FACE_FRAME_INTERVAL == 1:
+                self._face_detector.process_frame(frame, pixel_to_mm=self.pixel_to_mm)
+
         annotated = self.annotate(frame, dets)
+        # 在人脸检测可用时, 叠加人脸标注
+        if self._face_detector and self._face_detector.is_available:
+            annotated = self._face_detector.annotate(annotated)
         mask_display = self.build_mask_display(frame, dets)
 
         state.update_frames(frame, mask_display, annotated)
@@ -411,6 +508,7 @@ class VisionPipeline:
         if self._yolo is not None:
             self._yolo.release()
             self._yolo = None
+        self._face_detector = None
         if self._cap is not None:
             self._cap.release()
             self._cap = None

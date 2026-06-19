@@ -23,7 +23,7 @@ from typing import Optional
 import numpy as np
 
 from .arm_ik import ArmIK
-from .config import JOINT_LIMITS
+from .config import JOINT_LIMITS, DEEPSEEK_MODEL
 
 log = logging.getLogger("workbench")
 
@@ -196,7 +196,7 @@ class IKLLMEnhancer:
 
         try:
             fallback = llm._client.chat.completions.create(
-                model="deepseek-v4-flash",
+                model=DEEPSEEK_MODEL,
                 max_tokens=200,
                 timeout=8.0,
                 messages=[
@@ -204,6 +204,7 @@ class IKLLMEnhancer:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
+                response_format={"type": "json_object"},
             )
             raw = fallback.choices[0].message.content.strip()
             plan = json.loads(raw)
@@ -273,7 +274,7 @@ class IKLLMEnhancer:
 
         try:
             resp = llm._client.chat.completions.create(
-                model="deepseek-v4-flash",
+                model=DEEPSEEK_MODEL,
                 max_tokens=256,
                 timeout=8.0,
                 messages=[
@@ -281,6 +282,7 @@ class IKLLMEnhancer:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.3,
+                response_format={"type": "json_object"},
             )
             raw = resp.choices[0].message.content.strip()
             strategy = json.loads(raw)
@@ -335,7 +337,7 @@ class IKLLMEnhancer:
 
         try:
             resp = llm._client.chat.completions.create(
-                model="deepseek-v4-flash",
+                model=DEEPSEEK_MODEL,
                 max_tokens=200,
                 timeout=8.0,
                 messages=[
@@ -343,6 +345,7 @@ class IKLLMEnhancer:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
+                response_format={"type": "json_object"},
             )
             raw = resp.choices[0].message.content.strip()
             calib = json.loads(raw)

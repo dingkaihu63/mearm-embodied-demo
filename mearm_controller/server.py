@@ -31,12 +31,13 @@ from flask_socketio import SocketIO
 from .config import (
     SAFE_MODE,
 
-    HAND_GESTURE_CN, COLOR_CN, GESTURES, HOME_ANGLES,
+    HAND_GESTURE_CN, COLOR_CN, GESTURES, HOME_ANGLES, JOINT_LIMITS,
     SAFE_GESTURE_DELAY, GESTURE_PAUSE_AFTER_ACTION,
     LLM_SYSTEM_PROMPT, log,
 )
 from .shared_state import state
 from .arm_serial import ArmSerial
+from .arm_ik import ArmIK
 from .vision import VisionPipeline
 from .voice_listener import VoiceListener
 from .speaker import Speaker
@@ -135,6 +136,74 @@ def status_poll_loop(arm: ArmSerial):
                             pass
         except Exception:
             pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 握手动作辅助
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _do_handshake(arm: ArmSerial, speaker: Speaker,
+                  llm: Optional[LLMIntentParser]):
+    """向检测到的人脸位置延伸机械臂 (握手).
+
+    安全约束:
+    - 目标距离不超过 ArmIK.Y_MAX (130mm)
+    - 关节角度不超过 JOINT_LIMITS
+    - 如果没有检测到人脸 → 语音提示
+    """
+    if not state.face_detected or (state.face_x_mm == 0.0 and state.face_y_mm == 0.0):
+        state.add_log("🤝 握手失败: 未检测到人脸")
+        llm_speak(speaker, llm, "抱歉，没看到人呢，无法握手", "抱歉，没看到人呢")
+        return
+
+    target_x = state.face_x_mm
+    target_y = state.face_y_mm
+    # 握手高度: 台面上方约 80mm (中间高度)
+    target_z = 80.0
+
+    # 安全检查: 目标距离不超过最大前伸
+    import math
+    dist = math.sqrt(target_x ** 2 + target_y ** 2)
+    if dist > ArmIK.Y_MAX:
+        state.add_log(f"🤝 握手失败: 距离 {dist:.0f}mm 超出范围 {ArmIK.Y_MAX:.0f}mm")
+        llm_speak(speaker, llm,
+                  f"距离太远了，够不着，有{dist:.0f}毫米呢",
+                  "太远了，够不着呢")
+        return
+    if dist < 5.0:
+        state.add_log("🤝 握手: 太近了，保持不动")
+        llm_speak(speaker, llm, "你就在跟前呢，握个手~", "握个手~")
+        return
+
+    # 逆运动学求解
+    angles = ArmIK.solve(target_x, target_y, target_z)
+    if angles is None:
+        state.add_log(f"🤝 握手: IK 无解 ({target_x:.0f}, {target_y:.0f}, {target_z:.0f})")
+        llm_speak(speaker, llm, "够不着呢，位置不太合适", "够不着呢")
+        return
+
+    # 钳制到安全范围
+    for joint, deg in list(angles.items()):
+        lo, hi = JOINT_LIMITS.get(joint, (0, 180))
+        angles[joint] = max(lo, min(hi, int(deg)))
+
+    state.add_log(f"🤝 握手: 目标({target_x:.0f},{target_y:.0f},{target_z:.0f})mm "
+                  f"→ 关节{angles}")
+    llm_speak(speaker, llm,
+              f"正在向({target_x:.0f},{target_y:.0f})毫米处延伸握手",
+              "好的，握个手！")
+
+    # 执行延伸
+    state.update_joints(angles)
+    arm.move(angles)
+    arm.wait_done(timeout=3.0)
+    time.sleep(0.8)  # 短暂停留
+
+    # 回零
+    state.update_joints(dict(HOME_ANGLES))
+    arm.home()
+    arm.wait_done(timeout=3.0)
+    state.add_log("🤝 握手完成，已回零")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -411,6 +480,26 @@ def main():
                     state.add_log("🏠 手势触发回零")
                     llm_speak(speaker, llm, "机械臂已回到初始位置", "回零了")
 
+                elif action == "handshake":
+                    state.arm_busy = True
+                    socketio.emit("state_update", state.get_state_dict())
+
+                    def _gh_shake():
+                        _do_handshake(arm, speaker, llm)
+                        state.arm_busy = False
+                        state.action_paused = True
+                        state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
+                        socketio.emit("state_update", state.get_state_dict())
+
+                    threading.Thread(target=_gh_shake, daemon=True).start()
+
+                # ── 性别感知问候 ───────────────────────────────────────────────────
+                if action == "gesture" and intent.get("gesture") == "greet":
+                    if state.face_detected and state.face_gender:
+                        honorific = "帅哥" if state.face_gender == "male" else "美女"
+                        greet_msg = f"{honorific}你好呀，我是机械臂小助手~"
+                        speaker.speak(greet_msg)
+
                 socketio.emit("state_update", state.get_state_dict())
                 socketio.emit("voice_reply", {"text": message, "intent": intent})
 
@@ -632,6 +721,26 @@ def main():
                     state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
                     arm.home()
                     state.add_log("🏠 语音回零")
+
+                elif action == "handshake":
+                    state.arm_busy = True
+                    socketio.emit("state_update", state.get_state_dict())
+
+                    def _vh_shake():
+                        _do_handshake(arm, speaker, llm)
+                        state.arm_busy = False
+                        state.action_paused = True
+                        state.gesture_paused_until = time.time() + GESTURE_PAUSE_AFTER_ACTION
+                        socketio.emit("state_update", state.get_state_dict())
+
+                    threading.Thread(target=_vh_shake, daemon=True).start()
+
+                # ── 性别感知问候 ───────────────────────────────────────────────────
+                if action == "gesture" and intent.get("gesture") == "greet":
+                    if state.face_detected and state.face_gender:
+                        honorific = "帅哥" if state.face_gender == "male" else "美女"
+                        greet_msg = f"{honorific}你好呀，我是机械臂小助手~"
+                        speaker.speak(greet_msg)
 
                 socketio.emit("state_update", state.get_state_dict())
                 socketio.emit("voice_reply", {"text": message, "intent": intent})

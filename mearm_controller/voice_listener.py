@@ -155,6 +155,11 @@ class VoiceListener:
                             best_score = score
                             best_conf_raw = conf
                             best_lang = lang
+
+                        # ── 高置信度早停: 中文模型高置信度时跳过英文模型 ──
+                        # 减少 CPU 开销, 中文是主要语言
+                        if (lang == "cn" and conf >= 0.7 and len(combined) >= 3):
+                            break
                 else:
                     # ── 部分结果 ──────────────────────────────────────────────
                     partial_raw = rec.PartialResult()

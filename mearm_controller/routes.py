@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import threading
 import time
 from typing import Optional
@@ -91,20 +92,41 @@ def _pick_and_place(arm: ArmSerial, x_mm: float, y_mm: float,
     move_delay = SAFE_PICK_DELAY if SAFE_MODE else 0.35
     claw_delay = 0.4 if SAFE_MODE else 0.2
 
-    def _move(x, y, z):
-        # 使用 LLM fallback: 解析 IK 失败时自动寻找替代坐标
+    def _move(x, y, z, retry: bool = True):
+        """移动到目标坐标, 使用平滑插值路径.
+
+        优化:
+          1. 先求解目标关节角度
+          2. 用 ArmIK.interpolate_path 在当前角度和目标角度间插值
+          3. 逐步发送插值点, 实现平滑运动
+          4. 失败时缩回 10% 重试一次
+        """
         angles = IKLLMEnhancer.solve_with_fallback(
             x, y, z,
             visible_colors=visible_colors or [],
             llm=llm,
             current_joints=state.joint_angles,
         )
-        if angles:
-            state.update_joints(angles)
-            arm.move(angles)
-            arm.wait_done(timeout=3.0)  # 等待 Arduino 步进完成
-        else:
+        if angles is None:
+            if retry:
+                # 重试: 缩回 10%
+                log.warning(f"_move 无解, 缩回 10% 重试: ({x:.0f},{y:.0f},{z:.0f})")
+                return _move(x * 0.9, y * 0.9, z, retry=False)
             log.warning(f"_move 失败: 无法到达 ({x:.0f},{y:.0f},{z:.0f})")
+            return
+
+        # 获取当前关节角度作为插值起点
+        with state._lock:
+            start_angles = dict(state.joint_angles)
+
+        # 生成平滑插值路径
+        path = ArmIK.interpolate_path(start_angles, angles)
+
+        # 逐步执行插值路径
+        for step in path:
+            state.update_joints(step)
+            arm.move(step)
+            arm.wait_done(timeout=3.0)
 
     # ── 可选: 先推近 (远处物体策略) ────────────────────────────────────────
     if pre_push:

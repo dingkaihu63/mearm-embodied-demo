@@ -122,13 +122,18 @@ class GestureRecognizer:
 
         return _distance(tip, mcp) > _distance(pip, mcp) * 1.2
 
-    def _classify_on_frame(self, detection_result) -> tuple[str, list]:
-        """在单帧内分类手势. 返回 (手势名, 关键点列表)."""
+    def _classify_on_frame(self, detection_result, frame_shape: tuple) -> tuple[str, list]:
+        """在单帧内分类手势. 返回 (手势名, 关键点列表).
+
+        Args:
+            detection_result: MediaPipe HandLandmarker 结果
+            frame_shape: (H, W) 帧尺寸, 用于关键点像素坐标转换
+        """
         if not detection_result.hand_landmarks:
             return "none", []
 
         landmarks = detection_result.hand_landmarks[0]
-        h, w = 480, 640
+        h, w = frame_shape[:2]
 
         pts = [(int(l.x * w), int(l.y * h), l.z) for l in landmarks]
 
@@ -150,22 +155,13 @@ class GestureRecognizer:
         else:
             gesture = "none"
 
-        # 挥手检测 (更严格)
+        # 挥手检测 (更严格) — 修复 direction 初始化 bug
         if gesture == "open_palm":
             wrist_x = landmarks[MP_WRIST].x
             self._wrist_history.append(wrist_x)
             self._wave_frames += 1
             if self._wave_frames >= WAVE_HISTORY_FRAMES and len(self._wrist_history) >= WAVE_HISTORY_FRAMES:
-                crosses = 0
-                direction = 0
-                hist_list = list(self._wrist_history)
-                prev = hist_list[0]
-                for x in hist_list[1:]:
-                    d = 1 if x > prev else -1
-                    if d != direction and direction != 0:
-                        crosses += 1
-                    direction = d
-                    prev = x
+                crosses = self._count_wave_crosses()
                 if crosses >= WAVE_MIN_CROSSES:
                     gesture = "wave"
         else:
@@ -173,6 +169,32 @@ class GestureRecognizer:
             self._wave_frames = 0
 
         return gesture, pts
+
+    def _count_wave_crosses(self) -> int:
+        """统计手腕水平移动的穿越次数 (方向反转次数).
+
+        修复原算法 bug: direction 初始化为 0 导致第一次方向变化被忽略.
+        改为: 用相邻帧的差值符号变化计数, 忽略微小抖动 (阈值过滤).
+        """
+        hist = list(self._wrist_history)
+        if len(hist) < 3:
+            return 0
+
+        # 计算相邻帧的位移方向, 过滤微小抖动
+        threshold = 0.01  # x 坐标变化阈值 (归一化坐标)
+        directions: list[int] = []
+        for i in range(1, len(hist)):
+            delta = hist[i] - hist[i - 1]
+            if abs(delta) < threshold:
+                continue  # 忽略微小抖动
+            directions.append(1 if delta > 0 else -1)
+
+        # 统计方向反转次数
+        crosses = 0
+        for i in range(1, len(directions)):
+            if directions[i] != directions[i - 1] and directions[i - 1] != 0:
+                crosses += 1
+        return crosses
 
     def process_frame(self, frame: np.ndarray) -> Optional[str]:
         """处理一帧, 返回检测到并确认的手势名称.
@@ -190,7 +212,7 @@ class GestureRecognizer:
         mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
         result = self._detector.detect(mp_image)
 
-        raw_gesture, pts = self._classify_on_frame(result)
+        raw_gesture, pts = self._classify_on_frame(result, frame.shape)
         now = time.time()
 
         state.hand_detected = bool(result.hand_landmarks)

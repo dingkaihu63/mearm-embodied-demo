@@ -88,6 +88,16 @@ class SharedState:
         # False = 正常监听
         self.action_paused: bool = False  # 启动时不暂停，动作完成后才暂停
 
+        # ── 人脸检测 & 性别识别状态 ──────────────────────────────────────
+        self.face_detected: bool = False
+        self.face_gender: str = ""       # "male" | "female" | ""
+        self.face_confidence: float = 0.0
+        self.face_bbox: tuple = ()        # (x, y, w, h)
+        self.face_cx: int = 0
+        self.face_cy: int = 0
+        self.face_x_mm: float = 0.0
+        self.face_y_mm: float = 0.0
+
     def update_joint(self, name: str, angle: int):
         with self._lock:
             lo, hi = JOINT_LIMITS.get(name, (0, 180))
@@ -146,6 +156,10 @@ class SharedState:
                 "hand_gesture": self.hand_gesture,
                 "gesture_recog_enabled": self.gesture_recog_enabled,
                 "action_paused": self.action_paused,
+                "face_detected": self.face_detected,
+                "face_gender": self.face_gender,
+                "face_x_mm": round(self.face_x_mm, 1),
+                "face_y_mm": round(self.face_y_mm, 1),
             }
 
     def get_logs(self) -> list[str]:

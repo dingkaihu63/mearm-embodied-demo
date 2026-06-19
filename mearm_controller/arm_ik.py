@@ -39,6 +39,10 @@ class ArmIK:
     Z_MIN = 20.0      # right=180 时末端最低高度 (mm, 距台面)
     Z_MAX = 150.0     # right=0 时末端最高高度 (mm, 距台面)
 
+    # ── 路径插值参数 ──────────────────────────────────────────────────
+    INTERP_MAX_STEP_DEG = 8       # 单步最大角度变化 (度), 越小越平滑
+    INTERP_MIN_STEPS = 3          # 最少插值步数
+
     # ── 旧版遗留参数 (保留供标定模块兼容) ────────────────────────────
     L1 = 75.0         # deprecated: 解耦模型不再使用连杆长度
     L2 = 75.0
@@ -61,22 +65,36 @@ class ArmIK:
         原理:
           平行四边形连杆将 Y(远近) 和 Z(高低) 解耦.
           Left 舵机 → Y 轴, Right 舵机 → Z 轴.
+
+        优化:
+          - 目标超出 Y_MAX 时沿原方向缩回到可达范围 (而非直接返回 None)
+          - Z 超出范围时钳制到边界 (而非直接返回 None)
+          - 近距离保护保留
         """
         # 1. 底座旋转: 让臂平面朝向目标 (HOME=90°, 用户视角0°)
         r = np.sqrt(x_mm ** 2 + y_mm ** 2)   # 水平距离
         base_deg = 90 - int(np.degrees(np.arctan2(x_mm, y_mm)))
 
-        # 2. 可达性检查
-        if r > cls.Y_MAX:
-            log.warning(f"目标 ({x_mm:.0f},{y_mm:.0f},{z_mm:.0f}) "
-                        f"水平距离 {r:.0f}mm 超出最大前伸 {cls.Y_MAX:.0f}mm")
-            return None
+        # 2. 可达性检查 — 沿方向缩回而非直接拒绝
         if r < 5.0:
             log.warning("目标距底座过近")
             return None
-        if not (cls.Z_MIN <= z_mm <= cls.Z_MAX):
-            log.warning(f"目标高度 {z_mm:.0f}mm 超出范围 [{cls.Z_MIN:.0f}, {cls.Z_MAX:.0f}]")
-            return None
+
+        if r > cls.Y_MAX:
+            # 沿原方向缩回到 Y_MAX 的 95% (留余量)
+            scale = (cls.Y_MAX * 0.95) / r
+            x_mm = x_mm * scale
+            y_mm = y_mm * scale
+            r = cls.Y_MAX * 0.95
+            log.info(f"目标超出前伸范围, 沿方向缩回至 r={r:.0f}mm")
+
+        # Z 超出范围时钳制到边界 (而非拒绝)
+        if z_mm < cls.Z_MIN:
+            log.info(f"目标高度 {z_mm:.0f}mm 低于下限, 钳制到 {cls.Z_MIN:.0f}mm")
+            z_mm = cls.Z_MIN
+        elif z_mm > cls.Z_MAX:
+            log.info(f"目标高度 {z_mm:.0f}mm 高于上限, 钳制到 {cls.Z_MAX:.0f}mm")
+            z_mm = cls.Z_MAX
 
         # 3. Left 舵机 → Y 轴 (前后伸缩)
         #    left=0 → r=0 (收缩/最高), left=180 → r=Y_MAX (完全伸出/最低)
@@ -96,3 +114,40 @@ class ArmIK:
             result[joint] = int(np.clip(deg, lo, hi))
 
         return result
+
+    @classmethod
+    def interpolate_path(
+        cls,
+        start: dict[str, int],
+        goal: dict[str, int],
+    ) -> list[dict[str, int]]:
+        """在两个关节构型之间生成平滑插值路径.
+
+        线性插值, 步数由最大单关节角差决定, 确保每步变化不超过
+        INTERP_MAX_STEP_DEG, 使机械臂运动更平滑、减少舵机抖动.
+
+        Args:
+            start: 起始关节角度 {"base":.., "left":.., "right":.., ...}
+            goal:  目标关节角度
+
+        Returns:
+            插值路径列表 (不含 start, 含 goal), 每个元素是一个关节角度 dict
+        """
+        joints = [j for j in goal.keys() if j in start]
+        if not joints:
+            return [dict(goal)]
+
+        max_diff = max(abs(goal[j] - start[j]) for j in joints)
+        n_steps = max(int(np.ceil(max_diff / cls.INTERP_MAX_STEP_DEG)),
+                      cls.INTERP_MIN_STEPS)
+
+        path: list[dict[str, int]] = []
+        for i in range(1, n_steps + 1):
+            alpha = i / n_steps
+            step = {}
+            for j in joints:
+                val = start[j] + (goal[j] - start[j]) * alpha
+                lo, hi = JOINT_LIMITS.get(j, (0, 180))
+                step[j] = int(np.clip(round(val), lo, hi))
+            path.append(step)
+        return path
